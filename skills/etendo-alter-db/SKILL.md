@@ -1,0 +1,399 @@
+---
+name: etendo-alter-db
+description: "/etendo:alter-db — Create or modify tables, columns, views, and references in the Etendo Application Dictionary via webhooks"
+argument-hint: "<description, e.g. 'create table SMFT_customer with name and email'>"
+---
+
+# /etendo:alter-db — Create or modify tables and columns
+
+**Arguments:** `$ARGUMENTS` (optional description, e.g., "create table SMFT_customer with name and email")
+
+---
+
+First, read `~/.config/opencode/skills/etendo-_shared/guidelines.md`, `~/.config/opencode/skills/etendo-_shared/context.md`, and `~/.config/opencode/skills/etendo-_shared/webhooks.md`.
+
+For AD XML structure details, read `~/.config/opencode/skills/etendo-_shared/references/application-dictionary.md`. For display logic, references, sequences, and data access levels, read `~/.config/opencode/skills/etendo-_shared/references/advanced-ad.md`.
+
+## Headless REST endpoints (complement to webhooks)
+
+These EtendoRX headless endpoints provide read/query capabilities for inspecting existing tables and columns. Base URL: `{ETENDO_URL}/sws/com.etendoerp.etendorx.datasource/`.
+
+| Endpoint | Methods | Use for |
+|---|---|---|
+| `Table` | GET, PUT | Read table metadata, check if a table exists |
+| `Column` | GET, PUT | Read column metadata for a table |
+| `ModulePrefix` | GET | Look up a module's DB prefix |
+| `Reference` | GET | Look up reference types (String, Integer, etc.) |
+| `ValidationSetup` | GET, POST, PUT | Manage validation rules |
+| `TableTreeConfiguration` | GET, POST, PUT | Configure tree structures for tables |
+
+Use headless GET for **reading/querying** existing data. For **creation or structured operations**, always use webhooks.
+
+## Post-creation sequence (mandatory)
+
+After creating or modifying any table, column, or view, you **must** run this sequence in order:
+
+1. **`CheckTablesColumnHook`** (TableChecker) — Detects column changes and runs column registration procedures
+2. **`SyncTerms`** — Synchronizes terms/translations across the system
+3. **`ElementsHandler`** — Reads elements and auto-corrects missing descriptions/help
+
+> **`TABLE_ID` is required** for `CheckTablesColumnHook`. For new tables, use the ID returned by `CreateAndRegisterTable`. For adding columns to existing tables, look up the table ID first via `GetWindowTabOrTableInfo` or headless `Table` endpoint.
+
+```bash
+# Run after every table/column/view creation:
+curl -s -X POST "${ETENDO_URL}/webhooks/CheckTablesColumnHook" \
+  -H "Authorization: Bearer ${ETENDO_TOKEN}" \
+  -H "Content-Type: application/json" \
+  -d "{\"TableID\": \"${TABLE_ID}\"}"
+
+curl -s -X POST "${ETENDO_URL}/webhooks/SyncTerms" \
+  -H "Authorization: Bearer ${ETENDO_TOKEN}" \
+  -H "Content-Type: application/json" -d '{}'
+
+curl -s -X POST "${ETENDO_URL}/webhooks/ElementsHandler" \
+  -H "Authorization: Bearer ${ETENDO_TOKEN}" \
+  -H "Content-Type: application/json" \
+  -d "{\"TableID\": \"${TABLE_ID}\"}"
+```
+
+Never skip or reorder these steps. They ensure the Application Dictionary stays consistent.
+
+## Step 1: Context
+
+Resolve:
+- Active module (javapackage, DB prefix, AD_MODULE_ID)
+- DB connection (Docker or local)
+- Bearer token available (see `_webhooks` skill — section "Prerequisite: Bearer Token")
+- Tomcat running (webhooks require Tomcat UP → `./gradlew resources.up` if it's down)
+
+## Step 2: Understand the change
+
+If `$ARGUMENTS` describes it clearly, use it. Otherwise, ask:
+
+1. Create new table (via webhook)
+2. Add column to existing table (via webhook)
+3. Create a view (via webhook)
+4. Create a reference — list or table type (via headless endpoints)
+5. Modify column — type, size, nullable (manual SQL — no webhook available)
+6. Add index (manual SQL — no webhook available)
+7. Delete column (manual SQL — destructive, confirm first)
+8. Inspect existing table/column info
+
+For **new table**: ask for name (suggest `{PREFIX}_tablename`), list of columns.
+For **new column**: table, name, type, nullable, default.
+For **new view**: ask for name, source query.
+For **inspect**: use the `GetWindowTabOrTableInfo` webhook or headless `Table`/`Column` endpoints.
+
+**Inspect existing structures:**
+```bash
+# Via webhook (returns detailed AD info):
+curl -s -X POST "${ETENDO_URL}/webhooks/GetWindowTabOrTableInfo" \
+  -H "Authorization: Bearer ${ETENDO_TOKEN}" \
+  -H "Content-Type: application/json" \
+  -d "{\"TableName\": \"{PREFIX_TableName}\"}"
+
+# Via headless (simpler metadata):
+curl -s -H "Authorization: Bearer ${ETENDO_TOKEN}" \
+  "${ETENDO_URL}/sws/com.etendoerp.etendorx.datasource/Table?dBTableName={PREFIX_TableName}"
+```
+
+## Step 3: Show the plan and confirm
+
+Display a summary of what will be created. Ask for confirmation before executing.
+
+## Step 4: Create table (if applicable)
+
+**Important:** In Etendo, a physical PostgreSQL table is invisible to the system unless it has an `AD_TABLE` record. Similarly, physical columns need `AD_COLUMN` records with metadata (type, reference, nullable, etc.) to be usable in forms and entities.
+
+Use the `CreateAndRegisterTable` webhook. This creates the physical table in PostgreSQL AND registers it in AD_TABLE in a single call:
+
+```bash
+ETENDO_URL="http://localhost:8080/etendo"  # or the port from context.json
+MODULE_ID="{ad_module_id}"
+
+RESP=$(curl -s -X POST "${ETENDO_URL}/webhooks/CreateAndRegisterTable" \
+  -H "Authorization: Bearer ${ETENDO_TOKEN}" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "Name": "{LogicalName}",
+    "DBTableName": "{PREFIX_TableName}",
+    "ModuleID": "'${MODULE_ID}'",
+    "DataAccessLevel": "3",
+    "Description": "{description}",
+    "Help": "{description}",
+    "JavaClass": "{javapackage}.data.{EntityName}"
+  }')
+
+echo $RESP
+TABLE_ID=$(echo $RESP | python3 -c "import sys,json,re; r=json.load(sys.stdin); m=re.search(r\"ID: '([A-F0-9a-f]{32})'\",r.get('message','')); print(m.group(1) if m else r.get('error','FAIL'))")
+echo "Table ID: $TABLE_ID"
+```
+
+**Do not use `get_uuid()` or manual SQL** — the webhook handles it internally.
+
+## Step 5: Add columns
+
+For each column, use `CreateColumn`:
+
+```bash
+curl -s -X POST "${ETENDO_URL}/webhooks/CreateColumn" \
+  -H "Authorization: Bearer ${ETENDO_TOKEN}" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "tableID": "'${TABLE_ID}'",
+    "columnNameDB": "{column_name}",
+    "name": "{Visible Name}",
+    "referenceID": "{REF_ID}",
+    "moduleID": "'${MODULE_ID}'",
+    "canBeNull": "{true|false}",
+    "defaultValue": "{value}"
+  }'
+```
+
+**Most used Reference IDs:**
+| ID | Type | When to use |
+|---|---|---|
+| `10` | String | Short texts, names (AD default length 60, webhook creates VARCHAR 200) |
+| `14` | Text | Long descriptions, notes |
+| `11` | Integer | Whole numbers, numeric codes |
+| `22` | Amount/Decimal | Prices, scores, durations |
+| `15` | Date | Dates |
+| `20` | Yes/No | Checkboxes, boolean flags |
+| `17` | List | Fields with a closed list of values |
+| `19` | TableDir | FK to another table — **only works if your module owns the table** |
+| `30` | Search | FK to any table (required for extension columns on other modules' tables) |
+
+### Required fieldlength by reference type
+
+`AD_COLUMN.FIELDLENGTH` controls the maximum input length in the UI. A value of `0` makes the field **uneditable** (zero-length input box). Always set an appropriate value:
+
+| Reference | Recommended fieldlength |
+|---|---|
+| String (10) | `60`–`200` (match your VARCHAR size) |
+| Text (14) | `2000` or more |
+| Integer (11) | `10` |
+| Amount/Number (22) | `10` |
+| Date (15) | `19` |
+| DateTime (16) | `19` |
+| Yes/No (20) | `1` |
+| List (17) | `60` |
+| TableDir (19) / Search (30) | `32` |
+
+The `CreateColumn` webhook should set this automatically. **If creating columns via SQL**, you must set `fieldlength` explicitly — the default of `0` will break the UI.
+
+### Extension columns (EM_ prefix)
+
+When your module adds a column to a table owned by **another module** (not just core — any other module), the webhook detects this automatically (`moduleID ≠ table's owner module`) and adds the `EM_{PREFIX}_` prefix. This keeps extensions logically separate in the schema.
+
+**How it works:**
+- You pass `"columnNameDB": "Is_Course"` (without your prefix)
+- The webhook creates `EM_SMFT_Is_Course` (adds `EM_` + your module's DB prefix)
+- If you accidentally pass `"SMFT_Is_Course"`, the webhook detects the prefix is already there and avoids duplication
+
+**Restrictions on extension columns:**
+- **TableDir (ref 19) cannot be used** — the webhook throws `COPDEV_ExternalTableDirRef`. Use **Search (ref 30)** instead for FK references on extension columns.
+- Extension columns need an `AD_ELEMENT` record — `CreateColumn` creates it automatically, but columns created via SQL need the element sync (see Step 6).
+
+## Step 5b: Create view (if applicable)
+
+Use the `CreateView` webhook for database views:
+
+```bash
+RESP=$(curl -s -X POST "${ETENDO_URL}/webhooks/CreateView" \
+  -H "Authorization: Bearer ${ETENDO_TOKEN}" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "Name": "{LogicalName}",
+    "DBTableName": "{PREFIX_ViewName}",
+    "ModuleID": "'${MODULE_ID}'",
+    "DataAccessLevel": "3",
+    "Description": "{description}",
+    "Help": "{description}"
+  }')
+echo $RESP
+```
+
+The `CreateView` webhook checks columns and registers the view automatically.
+
+## Step 5c: Create reference (if applicable)
+
+References define field value constraints — either a fixed **list** of values or a **table lookup**. These use headless endpoints (base URL: `{ETENDO_URL}/sws/com.etendoerp.etendorx.datasource/`).
+
+### List reference (Reference ID `17`)
+
+A list reference provides a closed set of values (e.g., Status: Active/Inactive/Pending).
+
+```bash
+# 1. Look up the module ID via prefix:
+MODULE_RESP=$(curl -s -H "Authorization: Bearer ${ETENDO_TOKEN}" \
+  "${ETENDO_URL}/sws/com.etendoerp.etendorx.datasource/ModulePrefix?name={PREFIX}")
+# Save the "module" property (NOT "id") — this is the AD_MODULE_ID
+
+# 2. Create the reference header (parentReference="17" for list type):
+HEADER_RESP=$(curl -s -X POST \
+  "${ETENDO_URL}/sws/com.etendoerp.etendorx.datasource/ReferencesHeader" \
+  -H "Authorization: Bearer ${ETENDO_TOKEN}" \
+  -H "Content-Type: application/json" \
+  -d "{
+    \"name\": \"{ReferenceName}\",
+    \"description\": \"{description}\",
+    \"helpComment\": \"{help}\",
+    \"parentReference\": \"17\",
+    \"module\": \"${MODULE_ID}\"
+  }")
+# Extract the header ID from the response
+
+# 3. Create list items (one per value):
+curl -s -X POST \
+  "${ETENDO_URL}/sws/com.etendoerp.etendorx.datasource/ReferencesList" \
+  -H "Authorization: Bearer ${ETENDO_TOKEN}" \
+  -H "Content-Type: application/json" \
+  -d "{
+    \"reference\": \"${HEADER_ID}\",
+    \"name\": \"{ItemName}\",
+    \"searchKey\": \"{first 3 letters}\",
+    \"module\": \"${MODULE_ID}\"
+  }"
+# Repeat for each list item
+```
+
+### Table reference (Reference ID `18`)
+
+A table reference points to another table, showing a specific column as display value.
+
+```bash
+# 1. Look up the target table:
+TABLE_RESP=$(curl -s -H "Authorization: Bearer ${ETENDO_TOKEN}" \
+  "${ETENDO_URL}/sws/com.etendoerp.etendorx.datasource/Table?dBTableName={target_table}")
+# Save the table ID and name
+
+# 2. Get columns of that table (set _endRow to 200):
+COLS_RESP=$(curl -s -H "Authorization: Bearer ${ETENDO_TOKEN}" \
+  "${ETENDO_URL}/sws/com.etendoerp.etendorx.datasource/ViewColumn?table=${TABLE_ID}&_endRow=200")
+# Ask user which column is the key column and which is the display column
+
+# 3. Create the reference header (parentReference="18" for table type):
+HEADER_RESP=$(curl -s -X POST \
+  "${ETENDO_URL}/sws/com.etendoerp.etendorx.datasource/ReferencesHeader" \
+  -H "Authorization: Bearer ${ETENDO_TOKEN}" \
+  -H "Content-Type: application/json" \
+  -d "{
+    \"name\": \"{ReferenceName}\",
+    \"description\": \"{description}\",
+    \"helpComment\": \"{help}\",
+    \"parentReference\": \"18\",
+    \"module\": \"${MODULE_ID}\"
+  }")
+
+# 4. Create the table reference tab with key and display columns:
+curl -s -X POST \
+  "${ETENDO_URL}/sws/com.etendoerp.etendorx.datasource/ReferencesTab" \
+  -H "Authorization: Bearer ${ETENDO_TOKEN}" \
+  -H "Content-Type: application/json" \
+  -d "{
+    \"reference\": \"${HEADER_ID}\",
+    \"table\": \"${TABLE_ID}\",
+    \"keyColumn\": \"${KEY_COL_ID}\",
+    \"displayColumn\": \"${DISPLAY_COL_ID}\"
+  }"
+```
+
+After creating a reference, remember its header ID — you'll use it as the `referenceID` when creating columns with `CreateColumn` (instead of the standard IDs like `17` or `18`).
+
+## Step 6: Run post-creation sequence
+
+After creating tables, columns, or views, run the mandatory post-creation hooks:
+
+```bash
+# 1. TableChecker — detect and register column changes
+curl -s -X POST "${ETENDO_URL}/webhooks/CheckTablesColumnHook" \
+  -H "Authorization: Bearer ${ETENDO_TOKEN}" \
+  -H "Content-Type: application/json" \
+  -d "{\"TableID\": \"${TABLE_ID}\"}"
+
+# 2. SyncTerms — synchronize terms/translations
+curl -s -X POST "${ETENDO_URL}/webhooks/SyncTerms" \
+  -H "Authorization: Bearer ${ETENDO_TOKEN}" \
+  -H "Content-Type: application/json" -d '{}'
+
+# 3. ElementsHandler — auto-correct elements for this table
+curl -s -X POST "${ETENDO_URL}/webhooks/ElementsHandler" \
+  -H "Authorization: Bearer ${ETENDO_TOKEN}" \
+  -H "Content-Type: application/json" \
+  -d "{\"TableID\": \"${TABLE_ID}\", \"Mode\": \"READ_ELEMENTS\"}"
+```
+
+This sequence is **mandatory** — skipping it leads to inconsistencies in the Application Dictionary (missing element translations, unregistered columns, etc.).
+
+### Post-creation validation
+
+After creating columns (via webhook or SQL), verify that `fieldlength` is set correctly:
+
+```sql
+-- Find columns with fieldlength = 0 (will be uneditable in the UI)
+SELECT c.columnname, c.fieldlength, r.name as reference
+FROM ad_column c
+JOIN ad_reference r ON c.ad_reference_id = r.ad_reference_id
+WHERE c.ad_table_id = '${TABLE_ID}' AND c.fieldlength = 0;
+```
+
+If any are found, fix them using the recommended values from the fieldlength table in Step 5.
+
+**Important — columns created via SQL vs webhook:**
+
+The `CreateColumn` webhook creates the physical column, the `AD_COLUMN`, and the `AD_ELEMENT` all in one call. But if a column was created directly via SQL (`ALTER TABLE ADD COLUMN`), only the physical column exists — there is no `AD_COLUMN` and no `AD_ELEMENT`. In that case:
+
+1. `CheckTablesColumnHook` detects the physical column and creates the missing `AD_COLUMN`
+2. But it does **not** create the `AD_ELEMENT` — you must sync elements manually
+3. Without the `AD_ELEMENT`, `RegisterFields` will fail with NPE
+
+Run this SQL after `CheckTablesColumnHook` to create and link missing elements:
+
+```sql
+-- Create missing AD_ELEMENT records
+INSERT INTO ad_element (ad_element_id, ad_client_id, ad_org_id, isactive,
+  created, createdby, updated, updatedby, columnname, name, printname)
+SELECT get_uuid(), '0', '0', 'Y', now(), '0', now(), '0',
+  c.columnname, c.name, c.name
+FROM ad_column c
+WHERE c.ad_table_id = '{TABLE_ID}'
+  AND NOT EXISTS (
+    SELECT 1 FROM ad_element e
+    WHERE LOWER(e.columnname) = LOWER(c.columnname)
+  );
+
+-- Link columns to their elements
+UPDATE ad_column c SET ad_element_id = (
+  SELECT ad_element_id FROM ad_element e
+  WHERE LOWER(e.columnname) = LOWER(c.columnname) LIMIT 1
+)
+WHERE c.ad_table_id = '{TABLE_ID}'
+  AND c.ad_element_id IS NULL;
+```
+
+## Step 7: Export to XML
+
+With Tomcat DOWN (important — export.database requires Tomcat stopped):
+```bash
+JAVA_HOME=$(/usr/libexec/java_home -v 17 2>/dev/null || echo "$JAVA_HOME")
+JAVA_HOME=${JAVA_HOME} ./gradlew resources.down
+JAVA_HOME=${JAVA_HOME} ./gradlew export.database -Dmodule={javapackage} > /tmp/etendo-export.log 2>&1
+tail -5 /tmp/etendo-export.log
+# IMPORTANT: bring services back up after export
+JAVA_HOME=${JAVA_HOME} ./gradlew resources.up
+```
+Wait for containers to be healthy before running smartbuild or other webhook-dependent operations.
+
+## Step 8: Result
+
+```
++ Table {tablename} created and registered in AD
+
+  Columns added: {N}
+  Table ID: {ad_table_id}
+  Post-creation hooks: TableChecker + SyncTerms + Elements ✓
+
+  Next steps:
+    /etendo:window   -> expose the table in the UI
+    /etendo:smartbuild -> recompile and deploy
+```

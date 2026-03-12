@@ -1,0 +1,270 @@
+---
+name: etendo-report
+description: "/etendo:report — Create, edit, or register a Jasper Report in an Etendo module"
+argument-hint: "<description, e.g. 'sales order report with customer and totals'>"
+---
+
+# /etendo:report — Create, edit, or register a Jasper Report
+
+**Arguments:** `$ARGUMENTS` (e.g., "create sales order report", "register existing report", "edit report at path/to/file.jrxml")
+
+---
+
+First, read `~/.config/opencode/skills/etendo-_shared/guidelines.md`, `~/.config/opencode/skills/etendo-_shared/context.md`, and `~/.config/opencode/skills/etendo-_shared/webhooks.md`.
+
+A **Jasper Report** in Etendo is a JRXML file (JasperReports 6.0.0) that produces PDF/HTML output. Reports can be launched from a menu entry or from a button in a window.
+
+## Step 1: Determine operation
+
+- `create` → create a new JRXML report file
+- `edit {path}` → modify an existing JRXML file
+- `register` → register a report in the Application Dictionary
+- Natural language → infer intent. If unclear, ask: "Do you want to create, edit, or register a report?"
+
+## Step 2: Gather information
+
+**For create:**
+- Report name (required)
+- Module javapackage (from context)
+- Storage path: `modules/{javapackage}/src/{java/package/path}/reports/{ReportName}.jrxml`
+- What data should the report show? (tables, columns, filters)
+- Parameters (e.g., `DOCUMENT_ID`, date ranges)
+- Page layout: portrait (default) or landscape
+- Grouping requirements (e.g., group by order, by customer)
+
+**For register:**
+- Path to the JRXML file
+- Process name and search key
+- Which window/tab should launch it (optional)
+
+## Step 3: Verify database fields
+
+Before creating or modifying a report, verify that all referenced columns exist in the database:
+
+```sql
+-- Check columns of a table:
+SELECT column_name, data_type
+FROM information_schema.columns
+WHERE table_name = '{table_name}'
+ORDER BY ordinal_position;
+```
+
+Or via headless:
+```bash
+curl -s -H "Authorization: Bearer ${ETENDO_TOKEN}" \
+  "${ETENDO_URL}/sws/com.etendoerp.etendorx.datasource/ViewColumn?table=${TABLE_ID}&_endRow=200"
+```
+
+If fields don't exist or are incorrect, ask the user to correct them before proceeding.
+
+## Step 4: Create the JRXML file
+
+**JRXML structure rules:**
+- Use JasperReports 6.0.0 schema
+- `<textElement>` must NEVER be placed directly under `<band>` — always inside `<textField>` or `<staticText>`
+- `<band>` only contains: `<textField>`, `<staticText>`, `<line>`, `<rectangle>`, `<image>`, `<subreport>`, etc.
+- Encoding: always `UTF-8`
+- Default font: `Bitstream Vera Sans`, size 10
+- All comments in English
+
+**Template:**
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<jasperReport xmlns="http://jasperreports.sourceforge.net/jasperreports"
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  xsi:schemaLocation="http://jasperreports.sourceforge.net/jasperreports http://jasperreports.sourceforge.net/xsd/jasperreport.xsd"
+  name="{ReportName}" pageWidth="595" pageHeight="842"
+  columnWidth="483" leftMargin="56" rightMargin="56" topMargin="56" bottomMargin="56">
+
+  <property name="ireport.encoding" value="UTF-8"/>
+  <style name="default" vAlign="Middle" fontName="Bitstream Vera Sans" fontSize="10"/>
+  <style name="Report_Title" fontSize="18"/>
+  <style name="Group_Data_Label" fontSize="11" isBold="true"/>
+
+  <!-- Parameters -->
+  <parameter name="REPORT_TITLE" class="java.lang.String"/>
+  <parameter name="DOCUMENT_ID" class="java.lang.String"/>
+
+  <!-- Query -->
+  <queryString>
+    <![CDATA[
+    SELECT t.column1, t.column2, bp.name AS partner_name
+    FROM {table} t
+    JOIN c_bpartner bp ON t.c_bpartner_id = bp.c_bpartner_id
+    WHERE t.{table}_id = $P{DOCUMENT_ID}
+    ]]>
+  </queryString>
+
+  <!-- Fields (must match query columns) -->
+  <field name="column1" class="java.lang.String"/>
+  <field name="column2" class="java.util.Date"/>
+  <field name="partner_name" class="java.lang.String"/>
+
+  <!-- Title -->
+  <title>
+    <band height="30">
+      <textField>
+        <reportElement style="Report_Title" x="0" y="0" width="483" height="30"/>
+        <textFieldExpression><![CDATA[$P{REPORT_TITLE}]]></textFieldExpression>
+      </textField>
+    </band>
+  </title>
+
+  <!-- Column headers -->
+  <columnHeader>
+    <band height="20">
+      <staticText>
+        <reportElement style="Group_Data_Label" x="0" y="0" width="200" height="20"/>
+        <text><![CDATA[Column 1]]></text>
+      </staticText>
+      <staticText>
+        <reportElement style="Group_Data_Label" x="200" y="0" width="150" height="20"/>
+        <text><![CDATA[Column 2]]></text>
+      </staticText>
+    </band>
+  </columnHeader>
+
+  <!-- Detail rows -->
+  <detail>
+    <band height="20">
+      <textField>
+        <reportElement x="0" y="0" width="200" height="20"/>
+        <textFieldExpression><![CDATA[$F{column1}]]></textFieldExpression>
+      </textField>
+      <textField>
+        <reportElement x="200" y="0" width="150" height="20"/>
+        <textFieldExpression><![CDATA[$F{column2}]]></textFieldExpression>
+      </textField>
+    </band>
+  </detail>
+
+  <!-- Page footer -->
+  <pageFooter>
+    <band height="20">
+      <textField>
+        <reportElement x="400" y="0" width="83" height="20"/>
+        <textFieldExpression><![CDATA["Page " + $V{PAGE_NUMBER}]]></textFieldExpression>
+      </textField>
+    </band>
+  </pageFooter>
+</jasperReport>
+```
+
+**For landscape reports:** set `pageWidth="842"` `pageHeight="595"` `columnWidth="730"`.
+
+## Step 5: Register the report in AD
+
+Use the `ProcessDefinitionJasper` webhook to register the report and optionally attach it to a window:
+
+```bash
+ETENDO_URL=$(cat .etendo/context.json | python3 -c "import sys,json; print(json.load(sys.stdin).get('etendoUrl','http://localhost:8080/etendo'))")
+
+curl -s -X POST "${ETENDO_URL}/webhooks/ProcessDefinitionJasper" \
+  -H "Authorization: Bearer ${ETENDO_TOKEN}" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "Prefix": "{PREFIX}",
+    "ProcessName": "{Report Visible Name}",
+    "SearchKey": "{PREFIX_ReportName}",
+    "Description": "{description}",
+    "HelpComment": "{description}",
+    "JavaPackage": "{javapackage}",
+    "JasperFile": "@basedesign/{java/package/path}/reports/{ReportName}.jrxml"
+  }'
+```
+
+If Tomcat is not running, fall back to direct SQL to register the report:
+
+```bash
+cat > /tmp/register_jasper.sql << 'EOF'
+DO $$
+DECLARE
+  v_process_id    TEXT := get_uuid();
+  v_report_id     TEXT := get_uuid();
+  v_menu_id       TEXT := get_uuid();
+  v_module_id     TEXT := '{AD_MODULE_ID}';
+  v_prefix        TEXT := '{PREFIX}';
+BEGIN
+  -- 1. Create the Process Definition (OBUIAPP_Process) for Jasper
+  INSERT INTO OBUIAPP_PROCESS (
+    OBUIAPP_PROCESS_ID, AD_CLIENT_ID, AD_ORG_ID, ISACTIVE, CREATED, CREATEDBY, UPDATED, UPDATEDBY,
+    VALUE, NAME, DESCRIPTION, HELP, JAVACLASSNAME, UI_PATTERN, AD_MODULE_ID, ISENABLENOTIFICATIONS
+  ) VALUES (
+    v_process_id, '0', '0', 'Y', now(), '0', now(), '0',
+    '{PREFIX_SearchKey}',
+    '{Report Visible Name}',
+    '{description}',
+    '{description}',
+    'org.openbravo.client.application.report.BaseReportActionHandler',
+    'OBUIAPP_Report',
+    v_module_id,
+    'N'
+  );
+
+  -- 2. Create the Report Definition (links the process to the JRXML file)
+  INSERT INTO OBUIAPP_REPORT (
+    OBUIAPP_REPORT_ID, AD_CLIENT_ID, AD_ORG_ID, ISACTIVE, CREATED, CREATEDBY, UPDATED, UPDATEDBY,
+    OBUIAPP_PROCESS_ID, FILENAME
+  ) VALUES (
+    v_report_id, '0', '0', 'Y', now(), '0', now(), '0',
+    v_process_id,
+    '@basedesign/{java/package/path}/reports/{ReportName}.jrxml'
+  );
+
+  -- 3. Add parameters (repeat for each parameter):
+  INSERT INTO OBUIAPP_PROCESS_PARA (
+    OBUIAPP_PROCESS_PARA_ID, AD_CLIENT_ID, AD_ORG_ID, ISACTIVE, CREATED, CREATEDBY, UPDATED, UPDATEDBY,
+    OBUIAPP_PROCESS_ID, COLUMNNAME, NAME, SEQNO, AD_REFERENCE_ID, ISREQUIRED, AD_MODULE_ID
+  ) VALUES (
+    get_uuid(), '0', '0', 'Y', now(), '0', now(), '0',
+    v_process_id,
+    'p_document_id',         -- DB parameter name
+    'Document',              -- Display name
+    10,                      -- Sequence
+    '10',                    -- Reference ID (10=String, 15=Date, 20=YesNo, etc.)
+    'Y',                     -- Required
+    v_module_id
+  );
+
+  -- 4. Create Menu entry
+  INSERT INTO AD_MENU (
+    AD_MENU_ID, AD_CLIENT_ID, AD_ORG_ID, ISACTIVE, CREATED, CREATEDBY, UPDATED, UPDATEDBY,
+    NAME, DESCRIPTION, URL, ISSUMMARY, ACTION, AD_MODULE_ID, OBUIAPP_PROCESS_ID
+  ) VALUES (
+    v_menu_id, '0', '0', 'Y', now(), '0', now(), '0',
+    '{Report Visible Name}',
+    '{description}',
+    NULL, 'N', 'X',          -- Action 'X' = Process Definition
+    v_module_id,
+    v_process_id
+  );
+
+  RAISE NOTICE 'Process ID: %', v_process_id;
+END $$;
+EOF
+docker cp /tmp/register_jasper.sql etendo-db-1:/tmp/register_jasper.sql
+docker exec etendo-db-1 psql -U {bbdd.user} -d {bbdd.sid} -f /tmp/register_jasper.sql
+```
+
+> After registering via SQL, run `export.database` to save the new records to XML.
+
+## Step 6: Compile and deploy
+
+```bash
+JAVA_HOME=... ./gradlew smartbuild > /tmp/smartbuild.log 2>&1
+tail -20 /tmp/smartbuild.log
+```
+
+## Step 7: Result
+
+```
++ Report "{name}" created
+
+  File: modules/{javapackage}/src/{path}/reports/{ReportName}.jrxml
+  Registered: {Yes/No}
+
+  Next steps:
+    /etendo:smartbuild -> compile and deploy
+    Then: UI -> refresh -> {name} in the menu or Process Request window
+```

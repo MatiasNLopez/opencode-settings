@@ -84,6 +84,7 @@ When the user asks to recall something — any variation of "remember", "recall"
 Also search memory PROACTIVELY when:
 - Starting work on something that might have been done before
 - The user mentions a topic you have no context on — check if past sessions covered it
+- The user's FIRST message references the project, a feature, or a problem — call \`mem_search\` with keywords from their message to check for prior work before responding
 
 ### SESSION CLOSE PROTOCOL (mandatory)
 

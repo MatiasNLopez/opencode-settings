@@ -1,0 +1,691 @@
+---
+description: "Etendo Webhooks — Shared Helper. Internal reference read by all /etendo:* skills to invoke AD operations via HTTP webhooks instead of manual SQL."
+---
+
+# Etendo Webhooks — Shared Helper
+
+This file is NOT a user-facing command. It is read by `/etendo:*` skills to invoke AD operations via HTTP webhooks instead of manual SQL.
+
+For known bugs and workarounds, see `~/.config/opencode/skills/etendo-_shared/references/known-bugs-webhooks.md`.
+When you encounter new bugs or improvement opportunities, document them in `.etendo/webhook-issues.md` in the user's project (see guidelines section 16).
+
+---
+
+## When to use webhooks vs SQL
+
+| Task | Use |
+|---|---|
+| Create module (AD_MODULE + prefix + package) | Webhook `CreateModule` |
+| Create template (AD_MODULE type T, no prefix) | Direct SQL (CreateModule fails for templates — see note) |
+| Add dependency between modules | Webhook `AddModuleDependency` |
+| Create table + register in AD | Webhook `CreateAndRegisterTable` |
+| Create DB view and register in AD | Webhook `CreateView` |
+| Add column to own or standard table | Webhook `CreateColumn` |
+| Create list reference (dropdown) | Webhook `CreateReference` |
+| Assign referenceValueID to existing column | SQL: `UPDATE ad_column SET ad_reference_value_id=... WHERE ...` |
+| Create window + menu | Webhook `RegisterWindow` |
+| Create tab | Webhook `RegisterTab` |
+| Register fields for a tab | Webhook `RegisterFields` |
+| Register background process | Webhook `RegisterBGProcessWebHook` |
+| Register Action Process (launchable from menu) | Webhook `ProcessDefinitionButton` |
+| Register Jasper report | Webhook `ProcessDefinitionJasper` |
+| Register headless EtendoRX endpoint | Webhook `RegisterHeadlessEndpoint` |
+| Register physical columns in AD_COLUMN | Webhook `RegisterColumns` |
+| Register new webhook in DB | Webhook `RegisterNewWebHook` |
+| Tab filter (Where Clause) | Webhook `SetTabFilter` |
+| Computed column (SQL expression) | Webhook `CreateComputedColumn` |
+| Add physical FK in PostgreSQL | SQL: `ALTER TABLE ... ADD CONSTRAINT ... FOREIGN KEY ...` |
+| Add field to existing Field Group | Direct SQL (no webhook available) |
+| Rename window/tab/menu | SQL: `UPDATE ad_window/ad_tab/ad_menu SET name=...` |
+| Create AD message (validation/info) | Webhook `CreateMessage` |
+| Find module by name (get javapackage) | Webhook `JavaPackageRetriever` |
+| Synchronize AD terminology | Webhook `SyncTerms` |
+| Validate and fix table columns in AD | Webhook `CheckTablesColumnHook` |
+| Read/write element descriptions | Webhook `ElementsHandler` |
+
+---
+
+## Prerequisite: Bearer Token
+
+Both webhooks and headless endpoints use the same JWT Bearer token for authentication. Obtain it by logging in as **System Administrator** (role `"0"`):
+
+```bash
+ETENDO_TOKEN=$(curl -s -X POST "${ETENDO_URL}/sws/login" \
+  -H "Content-Type: application/json" \
+  -d '{"username":"admin","password":"admin","role":"0"}' \
+  | python3 -c "import sys,json; data=json.loads(sys.stdin.buffer.read().decode('utf-8','replace')); print(data.get('token',''))")
+```
+
+Use `Authorization: Bearer ${ETENDO_TOKEN}` for **all** calls — both webhooks and headless endpoints. Do NOT use `?apikey=...`.
+
+Requires Tomcat to be running. If Tomcat is down, fall back to SQL (see guidelines section 14).
+
+---
+
+## Invocation pattern
+
+**ALWAYS use POST with JSON body.** The webhook name goes in the URL path, and all parameters go in the JSON body.
+
+> **Parameter casing matters.** Most webhooks use PascalCase (`ModuleID`, `Name`, `DBPrefix`).
+> The exception is `CreateColumn`, which uses camelCase (`tableID`, `columnNameDB`, `moduleID`, `canBeNull`).
+> Using the wrong case causes silent failures — always copy parameter names exactly from the examples below.
+
+```bash
+ETENDO_URL="http://localhost:8080/etendo"
+
+curl -s -X POST "${ETENDO_URL}/webhooks/{WebhookName}" \
+  -H "Authorization: Bearer ${ETENDO_TOKEN}" \
+  -H "Content-Type: application/json" \
+  -d '{"Param1":"Value1","Param2":"Value2"}'
+```
+
+The response is JSON: `{"message":"..."}` on success, `{"error":"..."}` on failure.
+
+**Verify success:**
+```bash
+RESP=$(curl -s ...)
+echo $RESP | python3 -c "import sys,json; r=json.load(sys.stdin); print(r.get('message') or r.get('error','?'))"
+```
+
+---
+
+## Available webhooks and their parameters
+
+### `CreateModule`
+Creates AD_MODULE + AD_MODULE_DBPREFIX + AD_PACKAGE in a single call.
+
+> **Templates (Type=T) cannot have a DB prefix** — the trigger `ad_module_dbprefix_trg` blocks it.
+> Use direct SQL for templates (see section below).
+
+```bash
+RESP=$(curl -s -X POST "${ETENDO_URL}/webhooks/CreateModule" \
+  -H "Authorization: Bearer ${ETENDO_TOKEN}" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "Name": "Tutorial Module",
+    "JavaPackage": "com.smf.tutorial",
+    "DBPrefix": "SMFT",
+    "Description": "Tutorial module",
+    "Version": "1.0.0"
+  }')
+MODULE_ID=$(echo $RESP | python3 -c "import sys,json,re; r=json.load(sys.stdin); m=re.search(r'ID:\s*([A-F0-9a-f]{32})',r.get('message','')); print(m.group(1) if m else r.get('error','FAIL'))")
+echo "Module ID: $MODULE_ID"
+```
+
+**Required parameters:** `Name`, `JavaPackage`, `DBPrefix`
+**Optional:** `Description` (default=Name), `Version` (default=1.0.0), `Author`, `Type` (M/T/P, default=M)
+
+Response: `{"message": "Module created successfully with ID: <32-char-hex>"}`
+
+#### Create template via SQL (because CreateModule fails for Type=T with DBPrefix)
+
+```bash
+cat > /tmp/create_template.sql << 'EOF'
+DO $$
+DECLARE
+  v_module_id TEXT := get_uuid();
+  v_dep_id TEXT := get_uuid();
+  v_tutorial_id TEXT := '{MODULE_ID_OF_BASE_MODULE}';
+BEGIN
+  INSERT INTO AD_MODULE (AD_MODULE_ID, AD_CLIENT_ID, AD_ORG_ID, ISACTIVE, CREATED, CREATEDBY, UPDATED, UPDATEDBY,
+                         NAME, VERSION, DESCRIPTION, JAVAPACKAGE, TYPE, ISINDEVELOPMENT,
+                         ISTRANSLATIONREQUIRED, ISREGISTERED, HASCHARTOFACCOUNTS,
+                         ISTRANSLATIONMODULE, LICENSETYPE)
+  VALUES (v_module_id, '0', '0', 'Y', now(), '0', now(), '0',
+          '{Template Name}', '1.0.0', '{description}', '{com.smf.tutorial.template}', 'T', 'Y',
+          'N', 'N', 'N', 'N', 'ETENDO');
+
+  -- Dependency with ISINCLUDED=Y (module included in the template)
+  INSERT INTO AD_MODULE_DEPENDENCY (AD_MODULE_DEPENDENCY_ID, AD_CLIENT_ID, AD_ORG_ID, ISACTIVE,
+                                     CREATED, CREATEDBY, UPDATED, UPDATEDBY,
+                                     AD_MODULE_ID, AD_DEPENDENT_MODULE_ID, DEPENDANT_MODULE_NAME,
+                                     ISINCLUDED, STARTVERSION, DEPENDENCY_ENFORCEMENT)
+  VALUES (v_dep_id, '0', '0', 'Y', now(), '0', now(), '0',
+          v_module_id, v_tutorial_id, '{Tutorial Module}', 'Y', '1.0.0', 'MAJOR');
+
+  RAISE NOTICE 'Template ID: %', v_module_id;
+END $$;
+EOF
+docker cp /tmp/create_template.sql etendo-db-1:/tmp/create_template.sql
+docker exec etendo-db-1 psql -U {bbdd.user} -d {bbdd.sid} -f /tmp/create_template.sql
+```
+
+> **Actual columns of AD_MODULE_DEPENDENCY**: `startversion` (NOT NULL), `dependency_enforcement` (with underscore), `isincluded`.
+> There is no `dependencyenforcement` as one word — use `dependency_enforcement`.
+
+---
+
+### `AddModuleDependency`
+Adds a dependency between two modules.
+
+```bash
+curl -s -X POST "${ETENDO_URL}/webhooks/AddModuleDependency" \
+  -H "Authorization: Bearer ${ETENDO_TOKEN}" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "ModuleID": "'${MODULE_ID}'",
+    "DependsOnModuleID": "0",
+    "FirstVersion": "3.0.0"
+  }'
+```
+
+**Required parameters:** `ModuleID`, and one of: `DependsOnModuleID` | `DependsOnJavaPackage`
+**Optional:** `FirstVersion`, `LastVersion`, `IsIncluded` ("true"/"false"), `Enforcement` ("MAJOR"/"MINOR"/"NONE")
+
+> `DependsOnModuleID="0"` → core (org.openbravo, the Etendo base module)
+
+---
+
+### `CreateAndRegisterTable`
+Creates the physical table in PostgreSQL AND registers it in AD_TABLE with base columns (id, client, org, active, created, updated).
+
+```bash
+RESP=$(curl -s -X POST "${ETENDO_URL}/webhooks/CreateAndRegisterTable" \
+  -H "Authorization: Bearer ${ETENDO_TOKEN}" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "Name": "Subject",
+    "DBTableName": "SMFT_Subject",
+    "ModuleID": "'${MODULE_ID}'",
+    "DataAccessLevel": "3",
+    "Description": "Subjects table",
+    "Help": "Subjects table",
+    "JavaClass": "com.smf.tutorial.data.Subject"
+  }')
+TABLE_ID=$(echo $RESP | python3 -c "import sys,json,re; r=json.load(sys.stdin); m=re.search(r\"ID: '([A-F0-9a-f]{32})'\",r.get('message','')); print(m.group(1) if m else r.get('error','FAIL'))")
+```
+
+**Required parameters:** `Name`, `DBTableName`, `ModuleID`, `DataAccessLevel`, `Description`, `Help`, `JavaClass`
+**DataAccessLevel:** `3`=System/Org, `4`=Client/Org, `1`=Org
+
+Response: `{"message": "Table registered successfully in Etendo with the ID: '<id>'."}`
+The ID comes wrapped in single quotes.
+
+---
+
+### `CreateColumn`
+Adds a column to an existing table (physical in PostgreSQL + registration in AD_COLUMN).
+
+> **Parameters in camelCase** — NOT uppercase like other webhooks.
+> **`canBeNull`** accepts `"true"`/`"false"` or `"Y"`/`"N"`.
+> **Extension columns (EM_ prefix):** When `moduleID` differs from the table's owner module (not just core — any other module), the webhook automatically adds `EM_{PREFIX}_` to the column name. Pass the name WITHOUT your module prefix: `"columnNameDB": "Is_Course"` → creates `EM_SMFT_Is_Course`. If you pass the prefix already included, the webhook detects it and avoids duplication.
+> **TableDir (ref 19) cannot be used on extension columns** — use Search (ref 30) instead.
+> **`referenceValueID` is not supported** — for list columns, create with `referenceID=10` and update
+>   `ad_reference_value_id` via SQL afterwards.
+
+```bash
+curl -s -X POST "${ETENDO_URL}/webhooks/CreateColumn" \
+  -H "Authorization: Bearer ${ETENDO_TOKEN}" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "tableID": "'${TABLE_ID}'",
+    "columnNameDB": "column_name",
+    "name": "Visible Name",
+    "referenceID": "10",
+    "moduleID": "'${MODULE_ID}'",
+    "canBeNull": "true",
+    "defaultValue": ""
+  }'
+```
+
+**Required parameters:** `tableID`, `columnNameDB`, `name`, `referenceID`, `moduleID`, `canBeNull`
+**Optional:** `defaultValue`
+
+**Most common Reference IDs:**
+| ID | Type | SQL type |
+|---|---|---|
+| `10` | String | VARCHAR(60) default, webhook creates VARCHAR(200) |
+| `14` | Text (long) | TEXT |
+| `11` | Integer | NUMERIC(10,0) |
+| `22` | Amount/Number | NUMERIC(19,2) |
+| `15` | Date | TIMESTAMP |
+| `20` | Yes/No (boolean) | CHAR(1) |
+| `17` | List (closed reference) | VARCHAR(60) |
+| `19` | TableDir (auto FK by name) | VARCHAR(32) |
+| `30` | Search (general FK) | VARCHAR(32) |
+
+#### Update referenceValueID via SQL (for List columns):
+```bash
+cat > /tmp/fix_ref.sql << 'EOF'
+UPDATE ad_column
+SET ad_reference_id = '17',
+    ad_reference_value_id = '{REF_ID}'
+WHERE ad_table_id = '{TABLE_ID}' AND LOWER(columnname) = 'type';
+EOF
+docker cp /tmp/fix_ref.sql etendo-db-1:/tmp/fix_ref.sql
+docker exec etendo-db-1 psql -U {bbdd.user} -d {bbdd.sid} -f /tmp/fix_ref.sql
+```
+
+#### Add physical FKs via SQL:
+Physical FKs in the DB are NOT created automatically — the webhook only creates the column.
+Column names in the DB are **lowercase** (PostgreSQL normalizes).
+
+```bash
+cat > /tmp/add_fks.sql << 'EOF'
+ALTER TABLE smft_subject ADD CONSTRAINT smft_subj_teacher_fk
+  FOREIGN KEY (teacher) REFERENCES ad_user(ad_user_id);
+ALTER TABLE smft_enrollment ADD CONSTRAINT smft_enroll_edition_fk
+  FOREIGN KEY (courseedition) REFERENCES smft_course_edition(smft_course_edition_id);
+-- etc.
+EOF
+docker cp /tmp/add_fks.sql etendo-db-1:/tmp/add_fks.sql
+docker exec etendo-db-1 psql -U {bbdd.user} -d {bbdd.sid} -f /tmp/add_fks.sql
+```
+
+---
+
+### `CreateReference`
+Creates a List type reference (dropdown) with its items.
+
+```bash
+curl -s -X POST "${ETENDO_URL}/webhooks/CreateReference" \
+  -H "Authorization: Bearer ${ETENDO_TOKEN}" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "NameReference": "SMFT_TeachingType",
+    "Prefix": "SMFT",
+    "ReferenceList": "Annual,First Semester,Second Semester",
+    "Description": "Teaching type for the subject",
+    "Help": "Teaching type"
+  }'
+```
+
+**Required parameters:** `NameReference`, `Prefix`, `ReferenceList` (CSV of names), `Description`, `Help`
+
+> `ReferenceList` is a comma-separated list of **names** (not `value:name`).
+> The search key is auto-generated from the first 2 characters of each name (uppercase).
+> For custom search keys, update `ad_ref_list` via SQL.
+
+---
+
+### `RegisterWindow`
+Creates AD_WINDOW + AD_MENU entry.
+
+```bash
+RESP=$(curl -s -X POST "${ETENDO_URL}/webhooks/RegisterWindow" \
+  -H "Authorization: Bearer ${ETENDO_TOKEN}" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "DBPrefix": "SMFT",
+    "Name": "Course",
+    "Description": "Course management",
+    "HelpComment": "Course management"
+  }')
+WINDOW_ID=$(echo $RESP | python3 -c "import sys,json,re; r=json.load(sys.stdin); m=re.search(r'ID:\s*([A-F0-9a-f]{32})',r.get('message','')); print(m.group(1) if m else r.get('error','FAIL'))")
+echo "Window ID: $WINDOW_ID"
+```
+
+**Required parameters:** `DBPrefix`, `Name`, `Description`, `HelpComment`
+
+---
+
+### `RegisterTab`
+Creates an AD_TAB inside a window.
+
+> Tab hierarchy is determined by `TabLevel` + `SequenceNumber`:
+> a tab at level N is a child of the last tab at level N-1 before it (by sequence).
+> The ID in the response comes wrapped in single quotes: `ID: 'XXXX'`.
+
+```bash
+RESP=$(curl -s -X POST "${ETENDO_URL}/webhooks/RegisterTab" \
+  -H "Authorization: Bearer ${ETENDO_TOKEN}" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "WindowID": "'${WINDOW_ID}'",
+    "TableName": "SMFT_Subject",
+    "DBPrefix": "SMFT",
+    "TabLevel": "0",
+    "SequenceNumber": "10",
+    "Name": "Subject",
+    "Description": "Subjects tab",
+    "HelpComment": "Subjects tab"
+  }')
+TAB_ID=$(echo $RESP | python3 -c "import sys,json,re; r=json.load(sys.stdin); m=re.search(r\"ID: '([A-F0-9a-f]{32})'\",r.get('message','')); print(m.group(1) if m else r.get('error','FAIL'))")
+echo "Tab ID: $TAB_ID"
+```
+
+**Required parameters:** `WindowID`, `TableName`, `DBPrefix`, `TabLevel`, `SequenceNumber`, `Description`, `HelpComment`
+**Optional:** `Name` (default=TableName), `IsReadOnly` ("true"/"false")
+
+---
+
+### `SetTabFilter`
+Sets a SQL/HQL filter on an existing tab.
+
+```bash
+curl -s -X POST "${ETENDO_URL}/webhooks/SetTabFilter" \
+  -H "Authorization: Bearer ${ETENDO_TOKEN}" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "TabID": "'${TAB_ID}'",
+    "WhereClause": "e.iscourse='\''Y'\''",
+    "HQLWhereClause": "as e where e.course = '\''Y'\''",
+    "OrderByClause": "name"
+  }'
+```
+
+**Required parameters:** `TabID`, `WhereClause`
+**Optional:** `HQLWhereClause`, `OrderByClause`
+
+---
+
+### `RegisterFields`
+Auto-creates AD_FIELD for all columns of a tab.
+
+> `Description` and `HelpComment` are mandatory.
+
+```bash
+curl -s -X POST "${ETENDO_URL}/webhooks/RegisterFields" \
+  -H "Authorization: Bearer ${ETENDO_TOKEN}" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "WindowTabID": "'${TAB_ID}'",
+    "DBPrefix": "SMFT",
+    "Description": "Tab description",
+    "HelpComment": "Tab description"
+  }'
+```
+
+---
+
+### `RegisterBGProcessWebHook`
+Registers a Background Process in AD_PROCESS.
+
+```bash
+curl -s -X POST "${ETENDO_URL}/webhooks/RegisterBGProcessWebHook" \
+  -H "Authorization: Bearer ${ETENDO_TOKEN}" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "Javapackage": "com.smf.tutorial",
+    "Name": "Expire Enrollments",
+    "SearchKey": "SMFT_ExpireEnrollments",
+    "Description": "Marks past-due enrollments as expired",
+    "PreventConcurrent": "true"
+  }'
+```
+
+---
+
+### `ProcessDefinitionButton`
+Registers an Action Process (launchable from menu or button) in AD_PROCESS.
+
+```bash
+curl -s -X POST "${ETENDO_URL}/webhooks/ProcessDefinitionButton" \
+  -H "Authorization: Bearer ${ETENDO_TOKEN}" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "Prefix": "SMFT",
+    "SearchKey": "SMFT_EnrollStudent",
+    "ProcessName": "Enroll Student",
+    "Description": "Enrolls a student in a course",
+    "HelpComment": "Enrolls a student in a course",
+    "JavaPackage": "com.smf.tutorial",
+    "Parameters": "[{\"BD_NAME\":\"p_student\",\"NAME\":\"Student\",\"LENGTH\":\"32\",\"SEQNO\":\"10\",\"REFERENCE\":\"Search\"},{\"BD_NAME\":\"p_course\",\"NAME\":\"Course\",\"LENGTH\":\"32\",\"SEQNO\":\"20\",\"REFERENCE\":\"Search\"},{\"BD_NAME\":\"p_date\",\"NAME\":\"Date\",\"LENGTH\":\"10\",\"SEQNO\":\"30\",\"REFERENCE\":\"Date\"}]"
+  }'
+```
+
+**`Parameters` field:** JSON array, each item: `BD_NAME`, `NAME`, `LENGTH`, `SEQNO`, `REFERENCE`
+
+---
+
+### `ProcessDefinitionJasper`
+Registers a Jasper report in AD_PROCESS.
+
+```bash
+curl -s -X POST "${ETENDO_URL}/webhooks/ProcessDefinitionJasper" \
+  -H "Authorization: Bearer ${ETENDO_TOKEN}" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "Prefix": "SMFT",
+    "SearchKey": "SMFT_EvaluationReport",
+    "ProcessName": "Evaluation Report",
+    "Description": "Prints evaluation with questions and answers",
+    "HelpComment": "Prints evaluation with questions and answers",
+    "JavaPackage": "com.smf.tutorial",
+    "JasperFile": "@basedesign/com/smf/tutorial/reports/EvaluationReport.jrxml"
+  }'
+```
+
+---
+
+### `CreateComputedColumn`
+Creates a computed (virtual/transient) column in AD_COLUMN with a SQL expression.
+
+```bash
+curl -s -X POST "${ETENDO_URL}/webhooks/CreateComputedColumn" \
+  -H "Authorization: Bearer ${ETENDO_TOKEN}" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "TableName": "C_BPartner",
+    "ColumnName": "smft_first_expiry_course",
+    "Name": "First Expiry Course",
+    "SQLLogic": "(SELECT p.name FROM m_product p JOIN smft_enrollment e ON e.courseedition IN (SELECT smft_course_edition_id FROM smft_course_edition WHERE course = p.m_product_id) WHERE e.student = C_BPartner.C_BPartner_ID AND e.dateto >= now() ORDER BY e.dateto ASC LIMIT 1)",
+    "ModuleID": "'${MODULE_ID}'"
+  }'
+```
+
+**Required parameters:** `ColumnName`, `Name`, `SQLLogic`, `ModuleID`, and one of: `TableID` | `TableName`
+**Optional:** `ReferenceID` (default="10"=String), `Description`
+
+---
+
+### `RegisterHeadlessEndpoint`
+Registers an EtendoRX headless endpoint to expose a Tab via REST.
+
+```bash
+curl -s -X POST "${ETENDO_URL}/webhooks/RegisterHeadlessEndpoint" \
+  -H "Authorization: Bearer ${ETENDO_TOKEN}" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "RequestName": "MyCourses",
+    "ModuleID": "'${MODULE_ID}'",
+    "TableName": "smft_course_edition",
+    "Description": "REST endpoint for Course Edition records"
+  }'
+```
+
+**Required parameters:** `RequestName`, `ModuleID`, and one of: `TabID` | `TableName`
+**Optional:** `Description`, `Type` (default=R)
+
+---
+
+### `RegisterNewWebHook`
+Registers a new webhook (Java class) in the DB. Use after creating the `.java` file.
+
+```bash
+curl -s -X POST "${ETENDO_URL}/webhooks/RegisterNewWebHook" \
+  -H "Authorization: Bearer ${ETENDO_TOKEN}" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "Javaclass": "com.smf.tutorial.webhooks.MyWebhook",
+    "SearchKey": "MyWebhook",
+    "Params": "Param1;Param2;Param3",
+    "ModuleJavaPackage": "com.smf.tutorial"
+  }'
+```
+
+> After registering, grant access to the current token:
+> ```bash
+> NEW_WH_ID=$(docker exec etendo-db-1 psql -U {bbdd.user} -d {bbdd.sid} -t -c \
+>   "SELECT smfwhe_definedwebhook_id FROM smfwhe_definedwebhook WHERE name='MyWebhook';" | tr -d ' ')
+> docker exec etendo-db-1 psql -U {bbdd.user} -d {bbdd.sid} -c \
+>   "INSERT INTO smfwhe_definedwebhook_acc (smfwhe_definedwebhook_acc_id,ad_client_id,ad_org_id,isactive,created,createdby,updated,updatedby,smfwhe_definedwebhook_id,smfwhe_definedwebhook_token_id) VALUES (get_uuid(),'0','0','Y',now(),'0',now(),'0','${NEW_WH_ID}','${TOKEN_ID}');"
+> ```
+
+---
+
+### `SyncTerms`
+Runs the AD process "Synchronize Terms" to update AD_ELEMENT names. Also cleans up raw DB column names (replaces underscores with spaces).
+
+```bash
+# Standard sync (after any AD changes):
+curl -s -X POST "${ETENDO_URL}/webhooks/SyncTerms" \
+  -H "Authorization: Bearer ${ETENDO_TOKEN}" \
+  -H "Content-Type: application/json" \
+  -d '{}'
+
+# Clean sync (also overwrites existing names from column names — use when names look like raw DB columns):
+curl -s -X POST "${ETENDO_URL}/webhooks/SyncTerms" \
+  -H "Authorization: Bearer ${ETENDO_TOKEN}" \
+  -H "Content-Type: application/json" \
+  -d '{"CleanTerms": "true"}'
+```
+
+**Parameters:** None required.
+**Optional:** `CleanTerms` ("true") — forces overwrite of element names using the cleaned DB column name.
+
+---
+
+### `CheckTablesColumnHook`
+Re-runs Register Columns for a table, then validates all columns: checks name length, TableDir references, and DB type consistency. Auto-fixes type mismatches via `ALTER TABLE ... ALTER COLUMN ... TYPE`.
+
+```bash
+curl -s -X POST "${ETENDO_URL}/webhooks/CheckTablesColumnHook" \
+  -H "Authorization: Bearer ${ETENDO_TOKEN}" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "TableID": "'${TABLE_ID}'",
+    "ModuleID": "'${MODULE_ID}'"
+  }'
+```
+
+**Required parameters:** `TableID`
+**Optional:** `ModuleID` — when provided, only validates columns belonging to that module (recommended to avoid false positives on core columns).
+
+Response: JSON array of validation errors. Empty array = all columns are valid.
+
+---
+
+### `ElementsHandler`
+Dual-mode webhook for reading and writing AD_ELEMENT descriptions.
+
+```bash
+# READ mode — list columns missing description or help comment:
+curl -s -X POST "${ETENDO_URL}/webhooks/ElementsHandler" \
+  -H "Authorization: Bearer ${ETENDO_TOKEN}" \
+  -H "Content-Type: application/json" \
+  -d '{"TableID": "'${TABLE_ID}'", "Mode": "READ_ELEMENTS"}'
+
+# WRITE mode — fill description and help comment for a specific column:
+curl -s -X POST "${ETENDO_URL}/webhooks/ElementsHandler" \
+  -H "Authorization: Bearer ${ETENDO_TOKEN}" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "Mode": "WRITE_ELEMENTS",
+    "ColumnID": "'${COLUMN_ID}'",
+    "Name": "Human Readable Name",
+    "Description": "What this field stores",
+    "HelpComment": "When and how this field is used"
+  }'
+```
+
+**READ mode required:** `TableID`, `Mode="READ_ELEMENTS"`
+**WRITE mode required:** `ColumnID`, `Mode="WRITE_ELEMENTS"` — `Name`, `Description`, `HelpComment` are optional but at least one should be provided.
+
+---
+
+### `CreateMessage`
+Creates an AD_MESSAGE record usable in Java via `OBMessageUtils.messageBD("SearchKey")`.
+
+```bash
+curl -s -X POST "${ETENDO_URL}/webhooks/CreateMessage" \
+  -H "Authorization: Bearer ${ETENDO_TOKEN}" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "SearchKey": "PREFIX_DescriptiveName",
+    "MessageText": "Message text. Use %s for parameters.",
+    "MessageType": "E",
+    "ModuleID": "'${MODULE_ID}'"
+  }'
+```
+
+**Required parameters:** `SearchKey`, `MessageText`, `MessageType` (`I`=info, `E`=error), `ModuleID`
+
+> SearchKey format: `{PREFIX}_CamelCase`. Max 32 characters. No spaces.
+
+---
+
+### `JavaPackageRetriever`
+Searches modules by name and returns their Java packages. Useful for resolving `ModuleID` when only the module name is known.
+
+```bash
+curl -s -X POST "${ETENDO_URL}/webhooks/JavaPackageRetriever" \
+  -H "Authorization: Bearer ${ETENDO_TOKEN}" \
+  -H "Content-Type: application/json" \
+  -d '{"KeyWord": "tutorial"}'
+```
+
+**Required parameters:** `KeyWord` — partial match on module name (case-insensitive contains).
+
+Response: `{"info": "com.smf.tutorial, com.smf.tutorial.template"}` — comma-separated list.
+
+> After getting the javapackage, resolve MODULE_ID via SQL:
+> ```bash
+> MODULE_ID=$(docker exec etendo-db-1 psql -U {bbdd.user} -d {bbdd.sid} -t -c \
+>   "SELECT ad_module_id FROM ad_module WHERE javapackage = 'com.smf.tutorial';" | tr -d ' ')
+> ```
+
+---
+
+### `RegisterColumns`
+Syncs physical columns of a table with AD_COLUMN (equivalent to the "Create Columns from DB" button in the AD).
+
+```bash
+curl -s -X POST "${ETENDO_URL}/webhooks/RegisterColumns" \
+  -H "Authorization: Bearer ${ETENDO_TOKEN}" \
+  -H "Content-Type: application/json" \
+  -d '{"TableID": "'${TABLE_ID}'"}'
+```
+
+---
+
+### `GetWindowTabOrTableInfo`
+Queries IDs of existing windows, tabs, or tables without SQL.
+
+```bash
+curl -s -X POST "${ETENDO_URL}/webhooks/GetWindowTabOrTableInfo" \
+  -H "Authorization: Bearer ${ETENDO_TOKEN}" \
+  -H "Content-Type: application/json" \
+  -d '{"TableName": "SMFT_Subject"}'
+```
+
+---
+
+## Complete flow: new module from scratch
+
+```
+0. CreateModule              -> module_id
+1. AddModuleDependency       -> dependency on core 3.0
+2. CreateAndRegisterTable xN -> table_id per table
+3. CreateColumn xN           -> columns per table
+4. CreateReference           -> dropdown lists (if any)
+5. SQL: UPDATE ad_column     -> assign referenceValueID to list columns
+6. SQL: ALTER TABLE ADD FK   -> physical FKs (the webhook doesn't create them)
+7. RegisterWindow            -> window_id
+8. RegisterTab xN            -> tab_id per tab (order: TabLevel 0->1->2)
+9. RegisterFields xN         -> fields per tab
+10. SetTabFilter             -> WHERE filter on tabs that need it
+11. smartbuild               -> compile and deploy
+```
+
+---
+
+## Extract IDs from response
+
+Webhooks return the ID in two different formats. Use the correct regex:
+
+| Format | Webhooks |
+|---|---|
+| `ID: XXXX` (no quotes) | `CreateModule`, `RegisterWindow`, `RegisterBGProcessWebHook`, `ProcessDefinitionButton`, `ProcessDefinitionJasper` |
+| `ID: 'XXXX'` (single quotes) | `CreateAndRegisterTable`, `RegisterTab`, `CreateColumn`, `CreateReference` |
+
+```bash
+# ID without quotes:
+ID=$(echo $RESP | python3 -c "import sys,json,re; r=json.load(sys.stdin); m=re.search(r'ID:\s*([A-F0-9a-f]{32})',r.get('message','')); print(m.group(1) if m else r.get('error','FAIL'))")
+
+# ID wrapped in single quotes:
+ID=$(echo $RESP | python3 -c "import sys,json,re; r=json.load(sys.stdin); m=re.search(r\"ID: '([A-F0-9a-f]{32})'\",r.get('message','')); print(m.group(1) if m else r.get('error','FAIL'))")
+
+# Universal (handles both formats):
+ID=$(echo $RESP | python3 -c "import sys,json,re; r=json.load(sys.stdin); m=re.search(r\"ID:?\s*'?([A-F0-9a-f]{32})'?\",r.get('message','')); print(m.group(1) if m else r.get('error','FAIL'))")
+```

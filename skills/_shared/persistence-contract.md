@@ -5,20 +5,22 @@
 The orchestrator passes `artifact_store.mode` with one of: `engram | openspec | none`.
 
 Default resolution (when orchestrator does not explicitly set a mode):
+
 1. If Engram is available → use `engram`
 2. Otherwise → use `none`
 
 `openspec` is NEVER used by default — only when the orchestrator explicitly passes `openspec`.
 
-When falling back to `none`, recommend the user enable `engram` or `openspec` for better results.
 
-## Behavior Per Mode
+## State Persistence (Orchestrator)
 
-| Mode | Read from | Write to | Project files |
-|------|-----------|----------|---------------|
-| `engram` | Engram (see `engram-convention.md`) | Engram | Never |
-| `openspec` | Filesystem (see `openspec-convention.md`) | Filesystem | Yes |
-| `none` | Orchestrator prompt context | Nowhere | Never |
+The orchestrator persists DAG state after each phase transition. This enables SDD recovery after context compaction.
+
+| Mode         | Persist State                                       | Recover State                                                |
+| ------------ | --------------------------------------------------- | ------------------------------------------------------------ |
+| `engram`   | `mem_save(topic_key: "sdd/{change-name}/state")`  | `mem_search("sdd/*/state")` → `mem_get_observation(id)` |
+| `openspec` | Write `openspec/changes/{change-name}/state.yaml` | Read `openspec/changes/{change-name}/state.yaml`           |
+| `none`     | Not possible — state lives only in context         | Not possible — warn user                                    |
 
 ## Common Rules
 
