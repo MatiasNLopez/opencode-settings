@@ -20,4 +20,7 @@ CONTEXT:
 - Change name: {argument}
 - Artifact store mode: engram
 
+ENGRAM NOTE:
+Sub-agents handle persistence automatically. Each phase saves its artifact to engram with topic_key "sdd/{argument}/{type}" where type is: proposal, spec, design, tasks.
+
 Read the orchestrator instructions to coordinate this workflow. Do NOT execute phase work inline — delegate to sub-agents.
