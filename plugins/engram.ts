@@ -88,7 +88,7 @@ Also search memory PROACTIVELY when:
 
 ### SESSION CLOSE PROTOCOL (mandatory)
 
-Before ending a session or saying "done" / "listo" / "that's it", you MUST:
+Before ending a session or saying "done" / "listo" / "that's it" / "exit" / "end session" / "bye" / "chau" / "terminamos" / "salir", you MUST:
 1. Call \`mem_session_summary\` with this structure:
 
 ## Goal
