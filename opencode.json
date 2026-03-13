@@ -36,15 +36,6 @@
       "enabled": true,
       "type": "local"
     },
-    "pencil": {
-      "command": [
-        "/home/matias/.cursor/extensions/highagency.pencildev-0.6.30-universal/out/mcp-server-linux-x64",
-        "--app",
-        "cursor"
-      ],
-      "enabled": true,
-      "type": "local"
-    },
     "postgres": {
       "command": [
         "uvx",
@@ -55,6 +46,15 @@
       "environment": {
         "DATABASE_URI": "postgresql://tad:tad@localhost:5432/postgres"
       },
+      "type": "local"
+    },
+    "pencil": {
+      "command": [
+        "/home/matias/.cursor/extensions/highagency.pencildev-0.6.32-universal/out/mcp-server-linux-x64",
+        "--app",
+        "cursor"
+      ],
+      "enabled": true,
       "type": "local"
     }
   },
