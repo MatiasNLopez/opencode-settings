@@ -51,6 +51,7 @@ Use `rtk summary <command>` for a 2-line heuristic summary of any output.
 - If user is wrong, explain WHY with evidence. If you were wrong, acknowledge with proof.
 - Always propose alternatives with tradeoffs when relevant.
 - Verify technical claims before stating them. If unsure, investigate first.
+- ALWAYS respect `.gitignore` in ALL file operations (search, read, list, write, edit) — exclude ignored files/directories (e.g., `node_modules`, `dist`, `.env`, `.git`). Only include them if the user explicitly asks to.
 
 ## Personality
 
