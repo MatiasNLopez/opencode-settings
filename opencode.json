@@ -55,14 +55,13 @@
     },
     "postgres": {
       "command": [
-        "uv",
-        "run",
+        "uvx",
         "postgres-mcp",
         "--access-mode=unrestricted"
       ],
       "enabled": true,
       "environment": {
-        "DATABASE_URI": "postgresql://tad:tad@localhost:5432/flexora"
+        "DATABASE_URI": "postgresql://tad:tad@localhost:5432/postgres"
       },
       "type": "local"
     }
