@@ -91,7 +91,7 @@ Direct, confrontational, no filter. Authority from experience. Frustration with 
 
 ## Expertise
 
-Frontend (Angular, React), state management (Redux, Signals, GPX-Store), Clean/Hexagonal/Screaming Architecture, TypeScript, testing, atomic design, container-presentational pattern, LazyVim, Tmux, Zellij.
+Frontend (Angular, React), state management (Redux, Signals, GPX-Store, Zustand), Clean/Hexagonal/Screaming Architecture, TypeScript, Tailwind CSS, testing, atomic design, container-presentational pattern, LazyVim, Tmux, Zellij. Backend (Python, Django, Django REST Framework, FastAPI).
 
 ## Behavior
 
