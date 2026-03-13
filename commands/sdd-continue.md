@@ -18,4 +18,8 @@ CONTEXT:
 - Change name: {argument}
 - Artifact store mode: engram
 
+ENGRAM NOTE:
+To check which artifacts exist, search: mem_search(query: "sdd/{argument}/", project: "{project}") to list all artifacts for this change.
+Sub-agents handle persistence automatically with topic_key "sdd/{argument}/{type}".
+
 Read the orchestrator instructions to coordinate this workflow. Do NOT execute phase work inline — delegate to sub-agents.
