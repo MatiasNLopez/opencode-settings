@@ -13,9 +13,11 @@ This file is NOT a user-facing command. It is read by all `/etendo:*` commands a
 ## 1. Detect the Project
 
 **Verify you are inside an Etendo project** by checking:
+
 ```
-gradle.properties   -> contains bbdd.sid, bbdd.user, context.name
-build.gradle        -> contains etendo plugin or etendo-core dependency
+config/Openbravo.properties   -> contains bbdd.sid, bbdd.user, context.name (authoritative runtime config)
+gradle.properties             -> contains docker_* flags, githubUser/Token, build settings
+build.gradle                  -> contains etendo plugin or etendo-core dependency
 ```
 
 If neither exists in CWD, search parent directories up to 3 levels. If not found, inform the dev: "This does not appear to be an Etendo project. Run /etendo:init to bootstrap one, or navigate to your etendo_base directory."
@@ -27,20 +29,24 @@ If neither exists in CWD, search parent directories up to 3 levels. If not found
 Read `build.gradle` and check:
 
 **Source mode** -- `build.gradle` contains an `etendo { }` block:
+
 ```groovy
 etendo {
     coreVersion = "[25.1.0,26.1.0)"
 }
 ```
+
 - `etendo_core/` directory exists locally with full Java source
 - Compilation is slower but core files can be modified
 - First-time setup needs `./gradlew expandCore` before `./gradlew setup`
 - Used when contributing to core or applying deep patches
 
 **JAR mode** -- `build.gradle` contains core as a dependency:
+
 ```groovy
 implementation('com.etendoerp.platform:etendo-core:[25.1.0,26.1.0)')
 ```
+
 - No local `etendo_core/` source -- core is a pre-compiled JAR
 - Recommended for module development: faster builds, cleaner workspace
 - To inspect/patch core temporarily: `./gradlew expandCore -PforceExpand=true`
@@ -51,16 +57,17 @@ implementation('com.etendoerp.platform:etendo-core:[25.1.0,26.1.0)')
 
 Read `gradle.properties` and check which services are dockerized:
 
-| Property | Value | Meaning |
-|---|---|---|
-| `docker_com.etendoerp.docker_db` | `true` | DB runs in Docker (`etendo-db-1`) |
-| `docker_com.etendoerp.tomcat` | `true` | Tomcat runs in Docker (`etendo-tomcat-1`) |
-| `docker_com.etendoerp.etendorx` | `true` | RX services in Docker |
-| `docker_com.etendoerp.copilot` | `true` | Copilot in Docker |
+| Property                         | Value  | Meaning                                   |
+| -------------------------------- | ------ | ----------------------------------------- |
+| `docker_com.etendoerp.docker_db` | `true` | DB runs in Docker (`etendo-db-1`)         |
+| `docker_com.etendoerp.tomcat`    | `true` | Tomcat runs in Docker (`etendo-tomcat-1`) |
+| `docker_com.etendoerp.etendorx`  | `true` | RX services in Docker                     |
+| `docker_com.etendoerp.copilot`   | `true` | Copilot in Docker                         |
 
 **If a property is absent or `false` -> that service runs locally** (native install).
 
 **Resource dependencies (critical):**
+
 - DB must be UP before: `update.database`, `export.database`, `install`, `smartbuild`
 - Tomcat must be UP before: `smartbuild` deploy, UI access, RX endpoints
 - Start Docker services: `./gradlew resources.up`
@@ -70,16 +77,27 @@ Read `gradle.properties` and check which services are dockerized:
 
 ## 4. Read DB Connection Parameters
 
-From `gradle.properties`:
+From `config/Openbravo.properties` (authoritative source — this is what the running Etendo instance actually uses):
+
 ```
 bbdd.user       -> DB username (e.g. tad)
 bbdd.password   -> DB password
 bbdd.sid        -> DB name (e.g. etendo)
-bbdd.port       -> DB port (default: 5432)
+bbdd.port       -> extracted from bbdd.url (e.g. jdbc:postgresql://localhost\:5432 → 5432)
 context.name    -> Etendo context/webapp name (e.g. etendo)
 ```
 
+> **WARNING**: `gradle.properties` may contain a DIFFERENT `bbdd.sid` than `config/Openbravo.properties`. The runtime (Tomcat, export.database) uses `Openbravo.properties`. The build system (update.database) uses `gradle.properties`. Always prefer `Openbravo.properties` for SQL operations and context detection. If the two files disagree, warn the user.
+> bbdd.user -> DB username (e.g. tad)
+> bbdd.password -> DB password
+> bbdd.sid -> DB name (e.g. etendo)
+> bbdd.port -> DB port (default: 5432)
+> context.name -> Etendo context/webapp name (e.g. etendo)
+
+````
+
 **Executing SQL:**
+
 ```bash
 # Docker DB:
 docker exec -i etendo-db-1 psql -U {bbdd.user} -d {bbdd.sid}
@@ -87,7 +105,7 @@ docker exec -i etendo-db-1 psql -U {bbdd.user} -d {bbdd.sid} < script.sql
 
 # Local DB:
 psql -U {bbdd.user} -d {bbdd.sid} -h localhost -p {bbdd.port}
-```
+````
 
 ---
 
@@ -100,12 +118,14 @@ Resolve in this order:
 3. **Ask the dev** -- "Which module are you working on? (e.g. com.mycompany.mymodule)"
 
 The active module determines:
+
 - Where to write generated XML files
 - The DB prefix to use for table/column names
 - The `export.database -Dmodule=` filter
 - The `AD_MODULE_ID` in all SQL INSERTs
 
 ### `.etendo/context.json` format
+
 ```json
 {
   "module": "com.mycompany.mymodule",
@@ -116,18 +136,21 @@ The active module determines:
 ```
 
 Fields:
+
 - `module` — Java package name (used to resolve AD_MODULE_ID via SQL)
 - `modulePath` — relative path to the module directory
 - `dbPrefix` — DB prefix for table/column naming
 - `etendoUrl` — base URL of the Etendo instance **including the context path** (e.g. `http://localhost:8080/etendo`). The context name comes from `context.name` in `gradle.properties`. Default port is `8080`.
 
 > **Note:** `AD_MODULE_ID` is NOT stored in context.json. Resolve it at runtime:
+>
 > ```bash
 > MODULE_ID=$(docker exec etendo-db-1 psql -U {bbdd.user} -d {bbdd.sid} -t -c \
 >   "SELECT ad_module_id FROM ad_module WHERE javapackage = '{module}';" | tr -d ' ')
 > ```
 
 To find dbPrefix of a module, query:
+
 ```sql
 SELECT name FROM ad_module_dbprefix WHERE ad_module_id = (
   SELECT ad_module_id FROM ad_module WHERE javapackage = 'com.mycompany.mymodule'
@@ -141,6 +164,7 @@ SELECT name FROM ad_module_dbprefix WHERE ad_module_id = (
 **CRITICAL**: Always use the correct JAVA_HOME. Without it, Gradle fails with "Unsupported class file major version".
 
 Detect JAVA_HOME automatically:
+
 ```bash
 # macOS with multiple JDKs:
 JAVA_HOME=$(/usr/libexec/java_home -v 17 2>/dev/null || echo "$JAVA_HOME")
@@ -148,23 +172,25 @@ JAVA_HOME=$(/usr/libexec/java_home -v 17 2>/dev/null || echo "$JAVA_HOME")
 ```
 
 Always prefix Gradle commands with JAVA_HOME:
+
 ```bash
 JAVA_HOME={java_home} ./gradlew {task}
 ```
 
-| Task | Use for |
-|---|---|
-| `./gradlew setup` | Initialize config/Openbravo.properties from gradle.properties |
-| `./gradlew install` | Full initial install (DB schema + WAR) |
-| `./gradlew smartbuild` | Compile + deploy after any change |
-| `./gradlew update.database` | Apply model changes to DB |
-| `./gradlew export.database -Dmodule=X` | Export AD changes to XML |
-| `./gradlew generate.entities` | Regenerate Java entities after column changes |
-| `./gradlew resources.up` | Start Docker services |
-| `./gradlew resources.down` | Stop Docker services |
-| `./gradlew expandCore` | Expand core source (source mode) |
+| Task                                   | Use for                                                       |
+| -------------------------------------- | ------------------------------------------------------------- |
+| `./gradlew setup`                      | Initialize config/Openbravo.properties from gradle.properties |
+| `./gradlew install`                    | Full initial install (DB schema + WAR)                        |
+| `./gradlew smartbuild`                 | Compile + deploy after any change                             |
+| `./gradlew update.database`            | Apply model changes to DB                                     |
+| `./gradlew export.database -Dmodule=X` | Export AD changes to XML                                      |
+| `./gradlew generate.entities`          | Regenerate Java entities after column changes                 |
+| `./gradlew resources.up`               | Start Docker services                                         |
+| `./gradlew resources.down`             | Stop Docker services                                          |
+| `./gradlew expandCore`                 | Expand core source (source mode)                              |
 
 **Correct order for full deploy:**
+
 ```
 resources.down -> export.database -> resources.up -> (wait 15s) -> generate.entities -> smartbuild
 ```
@@ -205,6 +231,7 @@ v_table_id TEXT := REPLACE(gen_random_uuid()::text, '-', '');
 **NEVER use heredoc** (`docker exec ... << 'EOF'`) — it hangs indefinitely.
 
 **Correct pattern: write to /tmp + docker cp + psql -f**:
+
 ```bash
 # 1. Write SQL to a local file
 cat > /tmp/my_script.sql << 'EOF'
@@ -217,6 +244,7 @@ docker exec etendo-db-1 psql -U {bbdd.user} -d {bbdd.sid} -f /tmp/my_script.sql
 ```
 
 For short, single-line queries, `docker exec -c` is acceptable:
+
 ```bash
 docker exec etendo-db-1 psql -U {bbdd.user} -d {bbdd.sid} -t -c "SELECT 1;"
 ```
@@ -227,6 +255,7 @@ docker exec etendo-db-1 psql -U {bbdd.user} -d {bbdd.sid} -t -c "SELECT 1;"
 
 **Always prefer webhooks over manual SQL** for Application Dictionary operations.
 The webhooks from the `com.etendoerp.copilot.devassistant` module automate:
+
 - Create/register tables -> `CreateAndRegisterTable`
 - Add columns -> `CreateColumn`
 - Create windows + menu -> `RegisterWindow`

@@ -19,7 +19,7 @@ Then perform the following steps:
 ## Step 1: Read all context sources
 
 1. Check for `.etendo/context.json` and load it if it exists
-2. Read `gradle.properties` -- extract: `bbdd.user`, `bbdd.password`, `bbdd.sid`, `bbdd.port`, `context.name`, and all `docker_*` properties
+2. Read `config/Openbravo.properties` -- extract: `bbdd.user`, `bbdd.password`, `bbdd.sid`, `bbdd.port`, `context.name` (this is the authoritative runtime DB config; `gradle.properties` may be stale). Read `gradle.properties` only for `docker_*` properties, `githubUser`, `githubToken`, and `context.name` fallback.
 3. Read `build.gradle` -- determine **Source mode** vs **JAR mode**
 4. Check if CWD is inside a `modules/com.x.y.z/` path -- if so, extract the module package
 
@@ -31,10 +31,12 @@ Then perform the following steps:
 - **Any other text** -> treat as module java package to set (shortcut for `set module=...`)
 
 To resolve dbPrefix when setting a module:
+
 ```bash
 docker exec -i etendo-db-1 psql -U {bbdd.user} -d {bbdd.sid} -t -c \
   "SELECT p.name FROM ad_module_dbprefix p JOIN ad_module m ON m.ad_module_id = p.ad_module_id WHERE m.javapackage = '{module}';"
 ```
+
 (Adjust for local DB if `docker_com.etendoerp.docker_db` is not true)
 
 ## Step 3: Display context summary

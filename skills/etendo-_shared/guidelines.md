@@ -7,6 +7,7 @@ description: "Etendo Dev Assistant — Shared Guidelines. Cross-cutting conventi
 This file is NOT a user-facing command. It is read by all `/etendo:*` skills to ensure consistent behavior across the entire Dev Assistant.
 
 > **Hierarchy of shared files:**
+>
 > - `_guidelines` (this file) — conventions, patterns, output format
 > - `_context` — project detection, module resolution, DB connection, Gradle tasks
 > - `_webhooks` — webhook invocation patterns, specific webhook parameters, ID extraction
@@ -24,6 +25,7 @@ MODULE_JP=$(cat .etendo/context.json | python3 -c "import sys,json; print(json.l
 ```
 
 Then obtain a Bearer token (required for both webhooks and headless endpoints):
+
 ```bash
 ETENDO_TOKEN=$(curl -s -X POST "${ETENDO_URL}/sws/login" \
   -H "Content-Type: application/json" \
@@ -32,12 +34,14 @@ ETENDO_TOKEN=$(curl -s -X POST "${ETENDO_URL}/sws/login" \
 ```
 
 **MODULE_ID is NOT stored in context.json** — resolve it at runtime:
+
 ```bash
 MODULE_ID=$(docker exec etendo-db-1 psql -U {bbdd.user} -d {bbdd.sid} -t -c \
   "SELECT ad_module_id FROM ad_module WHERE javapackage = '${MODULE_JP}';" | tr -d ' ')
 ```
 
 For local DB (when `docker_com.etendoerp.docker_db` is not `true`):
+
 ```bash
 MODULE_ID=$(psql -U {bbdd.user} -d {bbdd.sid} -h localhost -p {bbdd.port} -t -c \
   "SELECT ad_module_id FROM ad_module WHERE javapackage = '${MODULE_JP}';" | tr -d ' ')
@@ -54,6 +58,7 @@ JAVA_HOME=$(/usr/libexec/java_home -v 17 2>/dev/null || echo "$JAVA_HOME")
 ```
 
 Then prefix every Gradle call:
+
 ```bash
 JAVA_HOME=${JAVA_HOME} ./gradlew {task}
 ```
@@ -65,6 +70,7 @@ JAVA_HOME=${JAVA_HOME} ./gradlew {task}
 **ALL long-running `./gradlew` calls MUST be delegated to a `general-purpose` subagent.** Never run Gradle directly in the main agent. Long Gradle tasks (smartbuild, compile.complete, install, export.database, generate.entities) can take minutes and will consume the main context window.
 
 Pattern:
+
 ```
 Agent(
   subagent_type="general-purpose",
@@ -86,6 +92,7 @@ tail -5 /tmp/etendo-smartbuild.log
 ```
 
 On failure, diagnose with:
+
 ```bash
 grep -E "ERROR|Exception|FAILED" /tmp/etendo-{task}.log | tail -30
 ```
@@ -95,7 +102,7 @@ Common errors across all Gradle tasks:
 |---|---|---|
 | `Unsupported class file major version` | Wrong Java version | Set JAVA_HOME to Java 17 |
 | `Connection refused` | DB not running | `./gradlew resources.up` or start PostgreSQL |
-| `Authentication failed` | Wrong `bbdd.*` credentials | Check `gradle.properties` |
+| `Authentication failed` | Wrong `bbdd.*` credentials | Check `config/Openbravo.properties` (runtime) and `gradle.properties` (build) — they may differ |
 | `Could not resolve` | Invalid GitHub token | Check `githubToken` in `gradle.properties` |
 | `invalid mount path` | `setup` not run before Docker | Run `./gradlew setup` first |
 | `OutOfMemoryError` | JVM heap too small | Add `org.gradle.jvmargs=-Xmx4g` to `gradle.properties` |
@@ -122,18 +129,18 @@ Wait for containers to be healthy before running smartbuild or other webhook-dep
 
 These apply everywhere in Etendo development:
 
-| Context | Convention | Example |
-|---|---|---|
-| **Database** (tables, columns) | Lowercase, words separated by `_` | `smft_course_edition` |
-| **Application Dictionary** (window/tab/field names) | Each word capitalized, separated by spaces | `Course Edition` |
-| **DB prefix** | 3-7 uppercase letters only, no numbers | `SMFT`, `COPDEV` |
-| **Java package** | Lowercase dot-separated, reverse domain | `com.smf.tutorial` |
-| **Java class** | PascalCase | `CourseEditionEventHandler` |
-| **Search keys** | `{PREFIX}_{DescriptiveName}` in CamelCase | `SMFT_ExpireEnrollments` |
+| Context                                             | Convention                                 | Example                     |
+| --------------------------------------------------- | ------------------------------------------ | --------------------------- |
+| **Database** (tables, columns)                      | Lowercase, words separated by `_`          | `smft_course_edition`       |
+| **Application Dictionary** (window/tab/field names) | Each word capitalized, separated by spaces | `Course Edition`            |
+| **DB prefix**                                       | 3-7 uppercase letters only, no numbers     | `SMFT`, `COPDEV`            |
+| **Java package**                                    | Lowercase dot-separated, reverse domain    | `com.smf.tutorial`          |
+| **Java class**                                      | PascalCase                                 | `CourseEditionEventHandler` |
+| **Search keys**                                     | `{PREFIX}_{DescriptiveName}` in CamelCase  | `SMFT_ExpireEnrollments`    |
 
 **Language rule:** All Application Dictionary configuration (names, descriptions, help texts) must be in **English**, even if the user communicates in another language. This ensures consistency across translations and avoids encoding issues.
 
-**Extension columns (EM_ prefix):** When a module adds a column to a table owned by a **different** module (not just core tables — any other module), the column name must be prefixed with `EM_{PREFIX}_`. The `CreateColumn` webhook handles this automatically — always pass the column name **without** your module prefix. Example: pass `"Is_Course"`, the webhook creates `EM_SMFT_Is_Course`. TableDir references (ref 19) are not allowed on extension columns — use Search (ref 30) instead. See `alter-db` skill for details.
+**Extension columns (EM\_ prefix):** When a module adds a column to a table owned by a **different** module (not just core tables — any other module), the column name must be prefixed with `EM_{PREFIX}_`. The `CreateColumn` webhook handles this automatically — always pass the column name **without** your module prefix. Example: pass `"Is_Course"`, the webhook creates `EM_SMFT_Is_Course`. TableDir references (ref 19) are not allowed on extension columns — use Search (ref 30) instead. See `alter-db` skill for details.
 
 ---
 
@@ -157,6 +164,7 @@ ID=$(echo $RESP | python3 -c "import sys,json,re; r=json.load(sys.stdin); m=re.s
 ```
 
 Always check for errors:
+
 ```bash
 if [ "$ID" = "FAIL" ] || [ -z "$ID" ]; then
   echo "ERROR: $RESP"
@@ -188,6 +196,7 @@ The `+` prefix signals success. Keep it concise — the summary should fit in a 
 ## 9. Confirmation before executing
 
 Always show a plan and ask for confirmation before:
+
 - Creating tables, columns, windows, tabs (AD changes are hard to undo)
 - Running `update.database` or `install` (modify the database)
 - Running `export.database` (modifies XML files)
@@ -201,7 +210,7 @@ Exception: read-only operations (queries, status checks, listing) do not need co
 
 Not all Etendo installations use Docker. When running commands that depend on Docker:
 
-1. Check `gradle.properties` for `docker_com.etendoerp.docker_db=true` and `docker_com.etendoerp.tomcat=true`
+1. Check `gradle.properties` for `docker_com.etendoerp.docker_db=true` and `docker_com.etendoerp.tomcat=true` (docker flags are only in gradle.properties). For DB connection params (`bbdd.sid`, `bbdd.user`, etc.), read from `config/Openbravo.properties` (authoritative runtime config)
 2. If Docker DB: `docker exec -i etendo-db-1 psql -U {bbdd.user} -d {bbdd.sid}`
 3. If local DB: `psql -U {bbdd.user} -d {bbdd.sid} -h localhost -p {bbdd.port}`
 4. If Docker Tomcat: `docker exec etendo-tomcat-1 sh -c 'tail -n 100 /usr/local/tomcat/logs/openbravo.log'`
@@ -223,6 +232,7 @@ Always inform the user which case applies after a successful build.
 **Never use heredoc** with `docker exec` — it hangs indefinitely.
 
 Correct pattern: write to `/tmp`, copy to container, then execute:
+
 ```bash
 cat > /tmp/my_script.sql << 'EOF'
 SELECT 1;
@@ -232,6 +242,7 @@ docker exec etendo-db-1 psql -U {bbdd.user} -d {bbdd.sid} -f /tmp/my_script.sql
 ```
 
 For short single-line queries, inline `-c` is acceptable:
+
 ```bash
 docker exec etendo-db-1 psql -U {bbdd.user} -d {bbdd.sid} -t -c "SELECT 1;"
 ```
@@ -307,6 +318,7 @@ ETENDO_TOKEN=$(curl -s -X POST "${ETENDO_URL}/sws/login" \
 Use `Authorization: Bearer ${ETENDO_TOKEN}` for every call. Do NOT use `?apikey=...`.
 
 > For business data that requires a specific org/role context, use a non-system role. Query available roles:
+>
 > ```sql
 > SELECT ad_role_id, name FROM ad_role WHERE isactive = 'Y' ORDER BY name;
 > ```
@@ -337,11 +349,11 @@ curl -s -X PUT -H "Authorization: Bearer ${ETENDO_TOKEN}" \
 
 ### Query filter syntax (`q` parameter)
 
-| Operator | Meaning | Example |
-|---|---|---|
-| `==` | Equals | `q=name==MyWebhook` |
-| `=ic=` | Case-insensitive contains | `q=name=ic=webhook` |
-| `=sw=` | Starts with | `q=name=sw=Sales` |
+| Operator        | Meaning                    | Example                   |
+| --------------- | -------------------------- | ------------------------- |
+| `==`            | Equals                     | `q=name==MyWebhook`       |
+| `=ic=`          | Case-insensitive contains  | `q=name=ic=webhook`       |
+| `=sw=`          | Starts with                | `q=name=sw=Sales`         |
 | `=ge=` / `=le=` | Greater/less than or equal | `q=created=ge=2024-01-01` |
 
 ### Useful headless endpoints
@@ -357,16 +369,17 @@ curl -s -X PUT -H "Authorization: Bearer ${ETENDO_TOKEN}" \
 
 Both skills configure EtendoRX headless API endpoints, but they operate differently:
 
-| Aspect | `/etendo:headless` | `/etendo:flow` |
-|---|---|---|
-| **Primary method** | Webhook `RegisterHeadlessEndpoint` | Direct SQL |
-| **Complexity** | Simple — 1 webhook call | Full control — 5 SQL INSERTs |
-| **Fields** | Not exposed automatically (webhook limitation) | You choose exactly which fields to expose |
-| **Flow + Flowpoint** | Not created automatically | Created as part of the flow |
-| **Best for** | Quick endpoint for a standard tab | Full OpenAPI configuration, multiple tabs, custom field sets |
-| **Fallback when Tomcat down** | Full SQL block in skill (5 tables) | Always uses SQL — no webhook dependency |
+| Aspect                        | `/etendo:headless`                             | `/etendo:flow`                                               |
+| ----------------------------- | ---------------------------------------------- | ------------------------------------------------------------ |
+| **Primary method**            | Webhook `RegisterHeadlessEndpoint`             | Direct SQL                                                   |
+| **Complexity**                | Simple — 1 webhook call                        | Full control — 5 SQL INSERTs                                 |
+| **Fields**                    | Not exposed automatically (webhook limitation) | You choose exactly which fields to expose                    |
+| **Flow + Flowpoint**          | Not created automatically                      | Created as part of the flow                                  |
+| **Best for**                  | Quick endpoint for a standard tab              | Full OpenAPI configuration, multiple tabs, custom field sets |
+| **Fallback when Tomcat down** | Full SQL block in skill (5 tables)             | Always uses SQL — no webhook dependency                      |
 
 **Decision rule:**
+
 - Use **`/etendo:headless`** when: you want a simple endpoint for a single tab, you don't need fine-grained field control, and Tomcat is running.
 - Use **`/etendo:flow`** when: you need to expose specific fields only, configure multiple endpoints in a group, or Tomcat is not available.
 
@@ -378,13 +391,13 @@ Both skills configure EtendoRX headless API endpoints, but they operate differen
 
 Skills must be resilient. The `com.etendoerp.copilot.devassistant` module may not be installed, or Tomcat may be down. Follow this priority order:
 
-| Priority | Method | When to use |
-|---|---|---|
-| **1. Webhooks** | `POST /webhooks/{Name}` | Preferred — handles validations, triggers, and multi-step logic in one call |
-| **2. Headless CRUD** | `GET/POST/PUT /sws/com.etendoerp.etendorx.datasource/...` | When no webhook exists for the operation, or for queries/checks |
-| **3. SQL manual** | Direct `INSERT/UPDATE` in PostgreSQL | When devassistant module is not installed or Tomcat is down |
-| **4. Ask the user** | Request manual action in the Etendo UI | For operations that can't be replicated via SQL (e.g., Synchronize Terminology, run triggers) |
-| **5. Edit XML directly** | Modify `src-db/database/sourcedata/*.xml` | **Last resort, only with explicit user authorization** |
+| Priority                 | Method                                                    | When to use                                                                                   |
+| ------------------------ | --------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
+| **1. Webhooks**          | `POST /webhooks/{Name}`                                   | Preferred — handles validations, triggers, and multi-step logic in one call                   |
+| **2. Headless CRUD**     | `GET/POST/PUT /sws/com.etendoerp.etendorx.datasource/...` | When no webhook exists for the operation, or for queries/checks                               |
+| **3. SQL manual**        | Direct `INSERT/UPDATE` in PostgreSQL                      | When devassistant module is not installed or Tomcat is down                                   |
+| **4. Ask the user**      | Request manual action in the Etendo UI                    | For operations that can't be replicated via SQL (e.g., Synchronize Terminology, run triggers) |
+| **5. Edit XML directly** | Modify `src-db/database/sourcedata/*.xml`                 | **Last resort, only with explicit user authorization**                                        |
 
 ### Detecting availability
 
@@ -464,6 +477,7 @@ python3 ~/.config/opencode/skills/etendo-_shared/scripts/sort_xml.py path/to/mod
 ```
 
 Output indicators:
+
 - `[✓]` — file was out of order and has been sorted
 - `[=]` — file was already correctly sorted, no changes made
 - `[✗]` — error (file not found or unrecognized format)
@@ -478,13 +492,13 @@ Output indicators:
 
 After any AD creation (via webhooks or SQL fallback), validate these common pitfalls before testing in the UI:
 
-| Check | Query | Symptom if broken |
-|---|---|---|
-| `ad_column.fieldlength > 0` | `SELECT columnname FROM ad_column WHERE ad_table_id='{TID}' AND fieldlength=0` | Fields are uneditable (zero-width input) |
-| `ad_field.displaylength` not NULL/0 | `SELECT name FROM ad_field WHERE ad_tab_id='{TID}' AND (displaylength IS NULL OR displaylength=0)` | `NullPointerException` on `getDisplayedLength()` |
-| `ad_table.ad_window_id` linked | `SELECT tablename FROM ad_table t JOIN ad_tab tb ON t.ad_table_id=tb.ad_table_id WHERE tb.ad_window_id='{WID}' AND t.ad_window_id IS NULL` | FreeMarker `tabView` error |
-| `ad_tab.processing = 'N'` | `SELECT name FROM ad_tab WHERE ad_tab_id='{TID}' AND processing IS NULL` | Window rendering failures |
-| `ad_tab.importfields = 'N'` | `SELECT name FROM ad_tab WHERE ad_tab_id='{TID}' AND importfields IS NULL` | Window rendering failures |
+| Check                               | Query                                                                                                                                      | Symptom if broken                                |
+| ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------ |
+| `ad_column.fieldlength > 0`         | `SELECT columnname FROM ad_column WHERE ad_table_id='{TID}' AND fieldlength=0`                                                             | Fields are uneditable (zero-width input)         |
+| `ad_field.displaylength` not NULL/0 | `SELECT name FROM ad_field WHERE ad_tab_id='{TID}' AND (displaylength IS NULL OR displaylength=0)`                                         | `NullPointerException` on `getDisplayedLength()` |
+| `ad_table.ad_window_id` linked      | `SELECT tablename FROM ad_table t JOIN ad_tab tb ON t.ad_table_id=tb.ad_table_id WHERE tb.ad_window_id='{WID}' AND t.ad_window_id IS NULL` | FreeMarker `tabView` error                       |
+| `ad_tab.processing = 'N'`           | `SELECT name FROM ad_tab WHERE ad_tab_id='{TID}' AND processing IS NULL`                                                                   | Window rendering failures                        |
+| `ad_tab.importfields = 'N'`         | `SELECT name FROM ad_tab WHERE ad_tab_id='{TID}' AND importfields IS NULL`                                                                 | Window rendering failures                        |
 
 See `~/.config/opencode/skills/etendo-_shared/references/known-bugs-webhooks.md` (B6–B9) for details on each issue and their fixes.
 
@@ -495,6 +509,7 @@ See `~/.config/opencode/skills/etendo-_shared/references/known-bugs-webhooks.md`
 **ALWAYS** document issues encountered during a session in `.etendo/skill-feedback.md` in the user's project directory. This applies to **any problem** — not just webhooks. The file serves as a report the user can submit as an issue to improve the plugin skills.
 
 **When to write — after ANY of these events:**
+
 - A skill instruction was wrong or incomplete (e.g., wrong table name, missing parameter, incorrect URL)
 - A webhook, headless endpoint, or Gradle task failed unexpectedly
 - A workaround was needed (e.g., SQL instead of webhook, manual fix after a skill step)
@@ -513,15 +528,17 @@ See `~/.config/opencode/skills/etendo-_shared/references/known-bugs-webhooks.md`
 ## Issues
 
 ### F1: [{skill name}] — {short description}
+
 - **What happened:** {describe the failure or unexpected behavior}
 - **What was expected:** {what should have happened according to the skill}
 - **How it was resolved:** {exact workaround — SQL, command, code change, etc.}
-- **Affected skill:** {e.g., etendo-module, etendo-alter-db, _guidelines}
+- **Affected skill:** {e.g., etendo-module, etendo-alter-db, \_guidelines}
 - **Suggestion:** {how the skill should be improved to prevent this}
 - **Date:** {YYYY-MM-DD}
 ```
 
 **Rules:**
+
 - Use sequential numbering (F1, F2, F3...)
 - Check if the issue is already documented before adding a duplicate
 - Create the file on first occurrence — don't create it empty
@@ -536,13 +553,13 @@ See `~/.config/opencode/skills/etendo-_shared/references/known-bugs-webhooks.md`
 
 Quick reference (see workflow manager skill for full details):
 
-| Operation | Convention |
-|-----------|-----------|
-| Feature branch | `feature/{JIRA-KEY}` |
-| Hotfix branch | `hotfix/#{GH}-{JIRA-KEY}` |
+| Operation      | Convention                                       |
+| -------------- | ------------------------------------------------ |
+| Feature branch | `feature/{JIRA-KEY}`                             |
+| Hotfix branch  | `hotfix/#{GH}-{JIRA-KEY}`                        |
 | Feature commit | `Feature {JIRA-KEY}: description` (max 80 chars) |
-| Hotfix commit | `Issue #{GH}: description` + `-m "{JIRA-KEY}"` |
-| Co-Authored-By | **Never** — Git Police rejects it |
+| Hotfix commit  | `Issue #{GH}: description` + `-m "{JIRA-KEY}"`   |
+| Co-Authored-By | **Never** — Git Police rejects it                |
 
 If a bug is detected during any `/etendo:*` operation, suggest creating a Jira issue using the workflow manager.
 
@@ -561,12 +578,14 @@ Before pushing code to a PR, run SonarQube analysis locally using `/etendo:sonar
 The official Etendo documentation at **https://docs.etendo.software** contains code snippets, configuration examples, API references, and how-to guides for all Etendo modules. Consult it before falling back to generic assumptions.
 
 **When to search:**
+
 - Before writing Java code (EventHandlers, Background Processes, Callouts, Reports): search for official examples and base classes.
 - When a webhook or Gradle task parameter is unclear.
 - When implementing EtendoRX flows, headless endpoints, or Copilot tools.
 - When you need correct import paths, class names, or annotations for Etendo/Openbravo APIs.
 
 **How to search** — use `WebSearch` with site filter, then `WebFetch` to read the page:
+
 ```
 site:docs.etendo.software {topic}
 ```
@@ -583,6 +602,7 @@ site:docs.etendo.software {topic}
 Existing code reflects the exact versions, import paths, and patterns already proven to work in this specific project. It is the most reliable reference available.
 
 **Priority order for code examples:**
+
 1. Existing code in the project (`modules/` directory)
 2. Etendo wiki (`docs.etendo.software`)
 3. Local `~/.config/opencode/skills/etendo-_shared/references/` files (webhook details, known bugs)

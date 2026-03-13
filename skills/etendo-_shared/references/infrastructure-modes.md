@@ -16,6 +16,7 @@ An Etendo project can run each component (DB, Tomcat, RX, Copilot) either locall
 ### Source Mode
 
 `build.gradle` contains:
+
 ```groovy
 etendo {
     coreVersion = "[25.1.0,26.1.0)"
@@ -31,12 +32,14 @@ etendo {
 ### JAR Mode
 
 `build.gradle` contains:
+
 ```groovy
 dependencies {
     implementation('com.etendoerp.platform:etendo-core:[25.1.0,26.1.0)')
     // ... other deps
 }
 ```
+
 (The `etendo {}` block is commented out or absent)
 
 - No `etendo_core/` source — core comes as pre-compiled JAR
@@ -46,6 +49,7 @@ dependencies {
 - Dynamic dependency resolution — updates automatically on version change
 
 ### Detecting the mode
+
 ```bash
 grep -c "etendo {" build.gradle          # > 0 → source mode
 grep -c "etendo-core" build.gradle       # > 0 → JAR mode
@@ -56,13 +60,13 @@ ls etendo_core/ 2>/dev/null && echo "source" || echo "jar"
 
 ## Docker Flags in `gradle.properties`
 
-| Property | Effect | Container name |
-|---|---|---|
-| `docker_com.etendoerp.docker_db=true` | DB runs in Docker | `etendo-db-1` |
-| `docker_com.etendoerp.tomcat=true` | Tomcat runs in Docker | `etendo-tomcat-1` |
-| `docker_com.etendoerp.etendorx=true` | EtendoRX services in Docker | `etendo-etendorx-1` |
-| `docker_com.etendoerp.etendorx_async=true` | Async RX + Kafka in Docker | — |
-| `docker_com.etendoerp.copilot=true` | Copilot AI service in Docker | `etendo-copilot-1` |
+| Property                                   | Effect                       | Container name      |
+| ------------------------------------------ | ---------------------------- | ------------------- |
+| `docker_com.etendoerp.docker_db=true`      | DB runs in Docker            | `etendo-db-1`       |
+| `docker_com.etendoerp.tomcat=true`         | Tomcat runs in Docker        | `etendo-tomcat-1`   |
+| `docker_com.etendoerp.etendorx=true`       | EtendoRX services in Docker  | `etendo-etendorx-1` |
+| `docker_com.etendoerp.etendorx_async=true` | Async RX + Kafka in Docker   | —                   |
+| `docker_com.etendoerp.copilot=true`        | Copilot AI service in Docker | `etendo-copilot-1`  |
 
 **Rule:** If a flag is absent or `false`, that service is expected to be running locally (native install or managed separately).
 
@@ -71,10 +75,12 @@ ls etendo_core/ 2>/dev/null && echo "source" || echo "jar"
 ## Common Deployment Configurations
 
 ### All-in-Docker (recommended for new devs)
+
 ```properties
 docker_com.etendoerp.docker_db=true
 docker_com.etendoerp.tomcat=true
 ```
+
 ```bash
 ./gradlew resources.up     # starts DB + Tomcat containers
 ./gradlew setup.web        # initializes Etendo
@@ -82,29 +88,35 @@ docker_com.etendoerp.tomcat=true
 ```
 
 ### Local DB + Docker Tomcat
+
 ```properties
 # docker_com.etendoerp.docker_db not set (or false)
 docker_com.etendoerp.tomcat=true
 ```
+
 ```properties
 bbdd.sid=etendo
 bbdd.port=5432
 bbdd.user=tad
 bbdd.password=tad
 ```
+
 - DB connection points to local PostgreSQL
 - Tomcat is containerized
 - `resources.up` starts only Tomcat container
 
 ### All-Local (advanced, no Docker)
+
 ```properties
 # No docker_* flags set
 ```
+
 - Dev manages PostgreSQL and Tomcat installations manually
 - `resources.up` / `resources.down` do nothing meaningful
 - Direct `psql` or connection string for DB access
 
 ### Full Stack + RX (microservices)
+
 ```properties
 docker_com.etendoerp.docker_db=true
 docker_com.etendoerp.tomcat=true
@@ -130,6 +142,7 @@ To run RX endpoints (/etendo/sws/...):
 ```
 
 ### Starting resources
+
 ```bash
 # Docker services
 ./gradlew resources.up
@@ -147,25 +160,30 @@ docker ps --filter name=etendo
 ## Executing SQL Against the DB
 
 ### Docker DB
+
 ```bash
 docker exec -i etendo-db-1 psql -U {bbdd.user} -d {bbdd.sid} < script.sql
 docker exec etendo-db-1 psql -U tad -d etendo -c "SELECT 1;"
 ```
 
 ### Local DB
+
 ```bash
 psql -U {bbdd.user} -d {bbdd.sid} -h localhost -p {bbdd.port} < script.sql
 psql -U tad -d etendo -c "SELECT 1;"
 ```
 
-### Detecting connection from `gradle.properties`
+### Detecting connection from `config/Openbravo.properties` (preferred)
+
 ```
 bbdd.user     → DB username
 bbdd.password → DB password
 bbdd.sid      → DB name (database)
-bbdd.port     → DB port (default: 5432)
+bbdd.port     → extracted from bbdd.url (e.g. jdbc:postgresql://localhost\:5432 → 5432)
 bbdd.systemUser / bbdd.systemPassword → superuser (for initial setup)
 ```
+
+> **Note**: Always read DB connection from `config/Openbravo.properties`, not `gradle.properties`. The two files may have different `bbdd.sid` values. `Openbravo.properties` is the authoritative runtime config used by Tomcat and `export.database`. `gradle.properties` is only authoritative for `update.database` and Gradle build tasks.
 
 ---
 
@@ -173,22 +191,24 @@ bbdd.systemUser / bbdd.systemPassword → superuser (for initial setup)
 
 After `smartbuild` or `compile.complete` deploys the WAR:
 
-| Tomcat mode | Behavior | Action required |
-|---|---|---|
-| **Docker** (`docker_com.etendoerp.tomcat=true`) | Tomcat detects the updated WAR and **auto-reloads** after ~30-60s | Wait for reload to complete |
-| **Local** (flag absent or `false`) | WAR is deployed but Tomcat does **NOT auto-reload** | User **must restart Tomcat manually** |
+| Tomcat mode                                     | Behavior                                                          | Action required                       |
+| ----------------------------------------------- | ----------------------------------------------------------------- | ------------------------------------- |
+| **Docker** (`docker_com.etendoerp.tomcat=true`) | Tomcat detects the updated WAR and **auto-reloads** after ~30-60s | Wait for reload to complete           |
+| **Local** (flag absent or `false`)              | WAR is deployed but Tomcat does **NOT auto-reload**               | User **must restart Tomcat manually** |
 
 ---
 
 ## Reading Tomcat Logs
 
 ### Docker Tomcat
+
 ```bash
 docker exec etendo-tomcat-1 sh -c 'tail -n 200 /usr/local/tomcat/logs/openbravo.log'
 docker logs etendo-tomcat-1 --tail 100
 ```
 
 ### Local Tomcat
+
 ```bash
 tail -n 200 $CATALINA_HOME/logs/openbravo.log
 ```
@@ -196,9 +216,11 @@ tail -n 200 $CATALINA_HOME/logs/openbravo.log
 ---
 
 ## Kafka / Async (when enabled)
+
 ```properties
 kafka.enable=true
 kafka.connect.bbdd.host=host.docker.internal
 kafka.connect.host=kafka
 ```
+
 Used with `docker_com.etendoerp.etendorx_async=true`. Enables event-driven processing for EtendoRX.
