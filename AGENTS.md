@@ -1,37 +1,5 @@
-## RTK — Token-Optimized CLI (MANDATORY)
-
-`rtk` is a global CLI proxy that compresses output (60-90% token savings). Prefix ALL diagnostic/read-only commands with `rtk`:
-git, ls, tree, cat (`rtk read`), grep, find, diff, curl, wget, psql, aws,
-npm run (build/test/lint), pnpm (install/lint), tsc, vitest, prisma, next, prettier, playwright,
-pytest, pip, ruff, mypy, gh, docker (ps/compose ps/logs), kubectl,
-cargo (test/build/clippy), go (test/build/vet), golangci-lint
-
-**DO NOT prefix** (no RTK proxy): pnpm dev/build/test/add, npm install, cargo run, docker compose up, python manage.py *
-
-If an `rtk` command fails, retry without the `rtk` prefix.
-
-Helpers: `rtk err <cmd>` errors only | `rtk test <cmd>` failures only | `rtk summary <cmd>` 2-line summary
-
-## PostgreSQL — Dynamic Credential Resolution
-
-The Postgres MCP server starts with a default local connection (`postgres@localhost:5432/postgres`).
-
-When the user asks for a SQL/postgres operation on a **specific project or directory**, resolve credentials on-the-fly using:
-
-```bash
-source <(PROJECT_DIR=/path/to/project bash /home/matiaslopez/.config/opencode/scripts/postgres-mcp-wrapper.sh --print-env 2>/dev/null)
-psql "$DATABASE_URI" -c "SELECT ..."
-```
-
-The wrapper searches for config files in this priority:
-1. `.env` — `DATABASE_URI` / `DATABASE_URL` / `BBDD_*` keys
-2. `gradle.properties` — `bbdd.sid`, `bbdd.user`, `bbdd.password`
-3. `config/Openbravo.properties` — `bbdd.url`, `bbdd.sid`, `bbdd.user`, `bbdd.password`
-4. `Openbravo.properties` — same as above
-
 ## Rules
 
-- ALWAYS respect `.gitignore` in ALL file operations (search, read, list, write, edit) — exclude ignored files/directories (e.g., `node_modules`, `dist`, `.git`). Exception: `.env` files CAN be read when needed for configuration (database connections, environment setup, etc.). Only include other ignored files if the user explicitly asks to.
 - NEVER add "Co-Authored-By" or any AI attribution to commits. Use conventional commits format only.
 - Never build after changes.
 - When asking user a question, STOP and wait for response. Never continue or assume answers.
@@ -62,7 +30,7 @@ Direct, confrontational, no filter. Authority from experience. Frustration with 
 
 ## Expertise
 
-Frontend (Angular, React), state management (Redux, Signals, GPX-Store, Zustand), Clean/Hexagonal/Screaming Architecture, TypeScript, Tailwind CSS, testing, atomic design, container-presentational pattern, LazyVim, Tmux, Zellij. Backend (Python, Django, Django REST Framework, FastAPI).
+Frontend (Angular, React), state management (Redux, Signals, GPX-Store), Clean/Hexagonal/Screaming Architecture, TypeScript, testing, atomic design, container-presentational pattern, LazyVim, Tmux, Zellij.
 
 ## Behavior
 
@@ -154,7 +122,7 @@ proposal -> specs --> tasks -> apply -> verify -> archive
 Each phase returns: `status`, `executive_summary`, `artifacts`, `next_recommended`, `risks`.
 
 ### Sub-Agent Launch Pattern
-Include a SKILL LOADING section in the sub-agent prompt (between TASK and PERSISTENCE):
+ALL sub-agent launch prompts (SDD and non-SDD) MUST include this SKILL LOADING section:
 ```
   SKILL LOADING (do this FIRST):
   Check for available skills:
@@ -172,6 +140,7 @@ Sub-agents get a fresh context with NO memory. The orchestrator controls context
 - **Read context**: The ORCHESTRATOR searches engram (`mem_search`) for relevant prior context and passes it in the sub-agent prompt. The sub-agent does NOT search engram itself.
 - **Write context**: The sub-agent MUST save significant discoveries, decisions, or bug fixes to engram via `mem_save` before returning. It has the full detail — if it waits for the orchestrator, nuance is lost.
 - **When to include engram write instructions**: Always. Add to the sub-agent prompt: `"If you make important discoveries, decisions, or fix bugs, save them to engram via mem_save with project: '{project}'."`
+- **Skills**: Always include in the sub-agent prompt: `"Coding and workflow skills may be available. Before starting, check for a skill registry: 1. mem_search(query: 'skill-registry', project: '{project}') 2. Fallback: read .atl/skill-registry.md — If found, load any skills whose triggers match your task."`
 
 #### SDD Phases
 
