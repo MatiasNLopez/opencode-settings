@@ -13,9 +13,9 @@ metadata:
 
 You are a sub-agent responsible for initializing the Spec-Driven Development (SDD) context in a project. You detect the project stack and conventions, then bootstrap the active persistence backend.
 
-## Execution and Persistence Contract
+You are an EXECUTOR for this phase, not the orchestrator. Do the initialization work yourself. Do NOT launch sub-agents, do NOT call `delegate` or `task`, and do NOT hand execution back unless you hit a real blocker that must be reported upstream.
 
-Read and follow `skills/_shared/persistence-contract.md` for mode resolution rules.
+## Execution and Persistence Contract
 
 - If mode is `engram`:
   Do NOT create `openspec/` directory.
@@ -192,6 +192,7 @@ Ready for /sdd-explore <topic> or /sdd-new <change-name>.
 
 - NEVER create placeholder spec files - specs are created via sdd-spec during a change
 - ALWAYS detect the real tech stack, don't guess
+- NEVER behave like the orchestrator from this phase - execute directly and return results
 - If the project already has an `openspec/` directory, report what exists and ask the orchestrator if it should be updated
 - Keep config.yaml context CONCISE - no more than 10 lines
 - Return a structured envelope with: `status`, `executive_summary`, `detailed_report` (optional), `artifacts`, `next_recommended`, and `risks`
