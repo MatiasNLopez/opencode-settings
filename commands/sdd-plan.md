@@ -1,15 +1,14 @@
 ---
-description: Start a new SDD change — runs exploration then creates a proposal
+description: Analyze spec + tasks + design and produce an impact/scope plan before implementation
 agent: sdd-orchestrator
 ---
 
-Follow the SDD orchestrator workflow for starting a new change named "$ARGUMENTS".
+Follow the SDD orchestrator workflow to create an implementation plan for change "$ARGUMENTS".
 
 WORKFLOW:
-1. Launch sdd-explore sub-agent to investigate the codebase for this change
-2. Present the exploration summary to the user
-3. Launch sdd-propose sub-agent to create a proposal based on the exploration
-4. Present the proposal summary and ask the user if they want to continue with specs and design
+1. Launch sdd-plan sub-agent to analyze spec, tasks, and design
+2. Present the plan summary to the user
+3. Wait for user confirmation before proceeding to sdd-apply
 
 CONTEXT:
 - Working directory: !`echo -n "$(pwd)"`
